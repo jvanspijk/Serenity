@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#272D2D">
+  <title>Serenity</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark"><svg aria-hidden="true"><use href="/icons.svg#logo"/></svg></span>
+      <span>Serenity</span>
+      <button type="button" class="icon sidebar-toggle" id="close-sidebar" title="Hide sidebar" aria-label="Hide sidebar"><svg><use href="/icons.svg#panel"/></svg></button>
+    </div>
+    <button type="button" class="new-chat" id="new-chat"><svg><use href="/icons.svg#plus"/></svg>New chat</button>
+    <div class="history-heading">
+      <h2>Conversations</h2>
+      <button type="button" class="history-bulk-delete" id="delete-selected" aria-keyshortcuts="Delete Meta+Backspace" hidden></button>
+    </div>
+    <nav id="history" aria-label="Conversations"></nav>
+    <div class="sidebar-footer">
+      <button type="button" class="settings-button" data-open-settings><svg><use href="/icons.svg#gear"/></svg>Settings</button>
+    </div>
+  </aside>
+  <button type="button" id="scrim" class="scrim" aria-label="Close sidebar" hidden></button>
+
+  <main>
+    <header class="toolbar">
+      <button type="button" class="icon" id="open-sidebar" title="Show sidebar" aria-label="Show sidebar"><svg><use href="/icons.svg#panel"/></svg></button>
+    </header>
+
+    <div class="stage" id="stage">
+      <section class="thread" id="thread" aria-label="Messages" hidden></section>
+      <div class="intro">
+        <div class="intro-mark"><svg aria-hidden="true"><use href="/icons.svg#logo"/></svg></div>
+        <h1>Ask a question</h1>
+      </div>
+    </div>
+
+    <div class="dock">
+      <div class="model-notice" id="model-notice" hidden><span id="model-error"></span><button type="button" id="retry-models">Retry</button><button type="button" data-open-settings>Settings</button></div>
+      <div class="status" id="status" role="status" hidden></div>
+      <form class="composer" id="composer">
+        <div id="attachments" class="attachments" hidden></div>
+        <textarea id="prompt" aria-label="Message" placeholder="Message…" rows="1" maxlength="100000"></textarea>
+        <div class="composer-actions">
+          <input id="files" type="file" multiple hidden>
+          <button type="button" class="icon" id="attach" title="Attach files" aria-label="Attach files"><svg><use href="/icons.svg#plus"/></svg></button>
+          <div class="chat-tools" id="chat-tools">
+            <button type="button" class="tools-button" id="tools-button" aria-label="Tools" aria-expanded="false" aria-controls="tools-panel">
+              <svg aria-hidden="true"><use href="/icons.svg#plug"/></svg><span>Tools</span>
+            </button>
+            <div class="tools-panel" id="tools-panel" hidden>
+              <fieldset id="tool-options"><legend>Tools for this chat</legend><div id="tool-switches"></div></fieldset>
+            </div>
+          </div>
+          <div class="composer-submit">
+            <label class="model-picker" title="Choose a model">
+              <select id="models" aria-label="Model"><option value="">Checking models…</option></select>
+              <svg class="chevron" aria-hidden="true"><use href="/icons.svg#chevron"/></svg>
+            </label>
+            <button type="submit" class="send" id="send" title="Send message" aria-label="Send message"><svg><use href="/icons.svg#send"/></svg></button>
+          </div>
+        </div>
+      </form>
+      <div class="chat-stats" id="chat-stats" aria-label="Conversation statistics" hidden>
+        <span title="Total reported prompt tokens across inference requests, including conversation history"><span id="input-tokens">—</span> input tokens</span>
+        <span title="Total reported completion tokens across inference requests"><span id="output-tokens">—</span> output tokens</span>
+        <span title="Generated tokens divided by generation time for requests with endpoint-reported timings">Avg <span id="token-rate">—</span> tokens/s</span>
+      </div>
+    </div>
+    <div class="drop-layer" id="drop-layer" hidden><svg><use href="/icons.svg#image"/></svg>Drop files to attach</div>
+  </main>
+
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form id="settings-form">
+      <div class="dialog-heading">
+        <h2 id="settings-title">Settings</h2>
+        <button type="button" class="icon" data-close-settings title="Close settings" aria-label="Close settings"><svg><use href="/icons.svg#close"/></svg></button>
+      </div>
+      <div class="settings-body">
+        <section class="settings-section">
+          <h3>Inference server</h3>
+          <label>OpenAI-compatible URL<input required type="url" id="endpoint" placeholder="http://host.docker.internal:11434/v1" spellcheck="false"></label>
+          <label>API key<input type="password" id="api-key" placeholder="Optional" autocomplete="off"></label>
+          <label class="toggle-row">Show inference statistics<input class="toggle" type="checkbox" id="show-inference-stats"></label>
+        </section>
+        <section class="settings-section">
+          <label>System prompt<textarea id="system-prompt" rows="4" maxlength="100000"></textarea></label>
+        </section>
+        <section class="settings-section">
+          <h3>Privacy</h3>
+          <label class="toggle-row">Share local timezone<input class="toggle" type="checkbox" id="share-timezone"></label>
+        </section>
+        <section class="settings-section">
+          <h3>Default tools for new chats</h3>
+          <div class="tool-settings" id="tool-defaults"></div>
+        </section>
+        <section class="settings-section">
+          <div class="section-heading">
+            <h3>MCP connections</h3>
+            <button type="button" class="icon" id="check-mcp" title="Check saved connections" aria-label="Check saved connections"><svg><use href="/icons.svg#refresh"/></svg></button>
+          </div>
+          <div id="connections"></div>
+          <button type="button" class="secondary" id="add-mcp"><svg><use href="/icons.svg#plus"/></svg>Add connection</button>
+        </section>
+        <p id="settings-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions"><button type="button" class="secondary" data-close-settings>Cancel</button><button class="primary" id="save-settings">Save</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-delete" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <form method="dialog">
+      <div class="dialog-heading"><h2 id="delete-title">Delete conversation?</h2></div>
+      <div class="settings-body"><p id="delete-description"></p></div>
+      <div class="dialog-actions"><button class="secondary" value="cancel" autofocus>Cancel</button><button class="danger" value="delete">Delete</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

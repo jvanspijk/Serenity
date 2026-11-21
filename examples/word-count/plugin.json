@@ -1,0 +1,21 @@
+{
+  "apiVersion": 1,
+  "id": "word-count",
+  "name": "Word count",
+  "description": "Counts words and characters in text supplied by the agent.",
+  "main": "index.mjs",
+  "tools": [
+    {
+      "name": "count",
+      "description": "Count words and characters in text.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "description": "Text to count." }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+**
+!package.json
+!package-lock.json
+!server.js
+!tool-registry.js
+!plugin-sdk.js
+!plugin-runner.mjs
+!mcp.js
+!protocol.js
+!requirements.txt
+!tools/
+!tools/**
+!public/
+!public/**
+!skills/
+!skills/**

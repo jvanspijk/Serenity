@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">
+  <symbol id="logo" viewBox="0 0 24 24">
+    <path fill="currentColor" stroke="none" d="
+      M12 2.5C14.7 4.5 16.2 7.1 16.4 10.5C14.3 11.7 12.8 13.6 12 16C11.2 13.6 9.7 11.7 7.6 10.5C7.8 7.1 9.3 4.5 12 2.5Z
+      M3.4 5.6C5.1 5.9 6.5 6.5 7.6 7.3C7.3 8.1 7.1 8.9 7 9.7C5.9 9.2 4.8 8.8 3.7 8.6C3.5 7.6 3.4 6.6 3.4 5.6Z
+      M20.6 5.6C18.9 5.9 17.5 6.5 16.4 7.3C16.7 8.1 16.9 8.9 17 9.7C18.1 9.2 19.2 8.8 20.3 8.6C20.5 7.6 20.6 6.6 20.6 5.6Z
+      M2 9.8C7.3 10.6 10.8 14.3 11.3 21.5C6.1 21.1 2.5 16.6 2 9.8Z
+      M22 9.8C16.7 10.6 13.2 14.3 12.7 21.5C17.9 21.1 21.5 16.6 22 9.8Z"/>
+  </symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="panel" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M9 5v14"/></symbol>
+  <symbol id="chat" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.5-3.5A7.5 7.5 0 1 1 20 11.5Z"/></symbol>
+  <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M9.5 3.7h5l.6 2.3 2 .9 2.1-.9 2.4 4.1-1.6 1.7v2l1.6 1.7-2.4 4.1-2.1-.9-2 .9-.6 2.3h-5l-.6-2.3-2-.9-2.1.9-2.4-4.1 1.6-1.7v-2l-1.6-1.7L4.8 6l2.1.9 2-.9z" transform="translate(0 -1)"/></symbol>
+  <symbol id="chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+  <symbol id="refresh" viewBox="0 0 24 24"><path d="M20 5v5h-5M4 19v-5h5m10.1-4A7.5 7.5 0 0 0 5.5 7m-.6 7A7.5 7.5 0 0 0 18.5 17"/></symbol>
+  <symbol id="send" viewBox="0 0 24 24"><path d="M12 19V5m-5 5 5-5 5 5"/></symbol>
+  <symbol id="stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="plug" viewBox="0 0 24 24"><path d="M9 3v4m6-4v4M7 7h10v3a5 5 0 0 1-10 0V7Zm5 8v6M5 7h14"/></symbol>
+  <symbol id="trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></symbol>
+  <symbol id="more" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></symbol>
+  <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="image" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m4 17 5-4 3 2 3.5-5 4.5 5"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 4H6a2 2 0 0 0-2 2v10"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+</svg>

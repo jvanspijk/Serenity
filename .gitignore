@@ -1,0 +1,22 @@
+# Local settings and application data
+.env
+.env.*
+!.env.example
+/data/
+
+# Dependencies and generated files
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+coverage/
+*.log
+npm-debug.log*
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
