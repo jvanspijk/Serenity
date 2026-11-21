@@ -1,10 +1,31 @@
 # Serenity
 
-Serenity is a small web chat UI for OpenAI-compatible model servers. It uses Node.js with plain HTML, CSS, and JavaScript. Docker includes Python and DDGS for web search.
+Serenity is a small web chat UI for OpenAI-compatible model servers. It uses Node.js with plain HTML, CSS, and JavaScript. Docker is optional. Web search uses Python and DDGS, whether you run Serenity directly or in Docker.
+
+## Run without Docker
+
+Install Node.js 24 or newer and start an OpenAI-compatible model server, such as Ollama, llama.cpp, or LM Studio. Then, from the project folder, run:
+
+```sh
+npm ci
+npm start
+```
+
+Open <http://127.0.0.1:8080>, configure the inference URL in **Settings**, and refresh the model list. The default URL is `http://127.0.0.1:11434/v1` (Ollama on the same machine).
+
+To enable web search, install Python 3.10 or newer and DDGS:
+
+```sh
+python -m pip install -r requirements.txt
+```
+
+Serenity uses `python` on Windows and `python3` elsewhere. Set `SERENITY_PYTHON` to the Python executable if needed, for example when using a virtual environment. Python and DDGS are not required for chat without web search.
+
+You can set `HOST`, `PORT`, `DATA_DIR`, `INFERENCE_URL`, and `INFERENCE_API_KEY` as environment variables before starting the server.
 
 ## Run with Docker
 
-You need Docker with Compose and a running OpenAI-compatible model server, such as Ollama, llama.cpp, or LM Studio.
+Alternatively, install Docker with Compose and start your model server. Docker builds an image containing Node.js, Python, and DDGS:
 
 ```sh
 docker compose up --build -d
@@ -23,18 +44,7 @@ INFERENCE_URL=http://host.docker.internal:11434/v1
 
 Saved settings take precedence over initial inference settings. Stop the app with `docker compose down`; its named volume retains chats and settings.
 
-## Run from source
-
-Install Node.js 24 or newer, then run:
-
-```sh
-npm ci
-npm start
-```
-
-Open <http://127.0.0.1:8080>. The default inference URL is `http://127.0.0.1:11434/v1`. You can set `HOST`, `PORT`, `DATA_DIR`, `INFERENCE_URL`, and `INFERENCE_API_KEY` as environment variables before starting the server.
-
-For web search, install Python 3.10 or newer and run `python -m pip install -r requirements.txt`. Serenity uses `python` on Windows and `python3` elsewhere. Set `SERENITY_PYTHON` to the Python executable if needed, for example when using a virtual environment.
+## Tests
 
 Run the tests with:
 
