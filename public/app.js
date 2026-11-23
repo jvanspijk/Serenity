@@ -13,6 +13,8 @@ const chatLocked = () => requestLocked() || Boolean(followUpEdit);
 const interruptOnEnter = () => state.settings?.followUpBehavior === 'interrupt';
 const hasDraft = () => Boolean($('prompt').value.trim() || state.attachments.length);
 const selectionModifier = event => event.metaKey || event.ctrlKey;
+const titleSegmenter = new Intl.Segmenter();
+const navigationKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Enter', ' ']);
 const selectedChats = new Set();
 let selectionAnchor;
 let clickedChat;
@@ -55,7 +57,6 @@ const api = async (...args) => (await request(...args)).json();
 
 function status(message = '') {
   $('status').textContent = message;
-  $('status').hidden = !message;
 }
 
 function renderControls() {
@@ -251,10 +252,15 @@ function renderHistory() {
     const row = element('button', 'history-row');
     row.type = 'button';
     row.title = chat.title;
+    row.setAttribute('aria-label', chat.title);
     row.dataset.id = chat.id;
     row.disabled = chatLocked();
     if (chat.id === state.chat?.id) row.setAttribute('aria-current', 'true');
-    row.append(icon('chat'), element('span', '', chat.title));
+    const selected = icon('check');
+    selected.classList.add('history-check');
+    const characters = Array.from(titleSegmenter.segment(chat.title), ({ segment }) => segment);
+    const title = characters.length > 32 ? characters.slice(0, 31).join('') + '…' : chat.title;
+    row.append(icon('chat'), element('span', '', title), selected);
     row.addEventListener('click', event => {
       row.focus({ preventScroll: true });
       if (event.shiftKey) {
@@ -355,6 +361,7 @@ function makeMessage(message, options = {}) {
     clearTimeout(copyReset);
     copy.replaceChildren(icon('check'));
     copy.setAttribute('aria-label', copyLabel + ' (copied)');
+    $('chat-announcement').textContent = 'Copied to clipboard.';
     copyReset = setTimeout(() => {
       copy.replaceChildren(icon('copy'));
       copy.setAttribute('aria-label', copyLabel);
@@ -377,6 +384,7 @@ function makeMessage(message, options = {}) {
       for (const file of message.files) files.append(element('span', 'file-name', file.name));
       bubble.append(files);
     }
+    bubble.prepend(element('div', 'user-label', 'You'));
     bubble.append(element('div', 'message-text', message.content));
     article.append(bubble);
     if (message.content) article.append(copy);
@@ -469,6 +477,8 @@ function renderAttachments() {
     remove.addEventListener('click', () => {
       state.attachments.splice(index, 1);
       renderAttachments();
+      const buttons = $('attachments').querySelectorAll('button');
+      (buttons[Math.min(index, buttons.length - 1)] || $('attach')).focus();
     });
     tile.append(remove);
     return tile;
@@ -582,10 +592,12 @@ async function openChat(id) {
     const chat = await api('chats/' + encodeURIComponent(id));
     if (request !== navigation || chatLocked()) return;
     state.chat = chat;
+    const sidebarHadFocus = $('sidebar').contains(document.activeElement) && mobile.matches;
     history.replaceState(null, '', '#' + chat.id);
     resetDraft();
     renderModels(chat.model);
     renderThread();
+    if (sidebarHadFocus) ($('thread').hidden ? $('prompt') : $('thread')).focus({ preventScroll: true });
   } catch (error) {
     if (request === navigation) status(error.message);
   }
@@ -669,6 +681,7 @@ async function submit(message, retry = false) {
   navigation++;
   setToolsOpen(false);
   status();
+  $('chat-announcement').textContent = 'Waiting for reply.';
   renderHistory();
   renderFollowUps();
   renderAttachments();
@@ -737,7 +750,10 @@ async function submit(message, retry = false) {
   } finally {
     if (updateFrame) cancelAnimationFrame(updateFrame);
     const stick = nearBottom();
-    if (started) assistant.update(false);
+    if (started) {
+      assistant.update(false);
+      $('chat-announcement').textContent = reply.issue || 'Reply ready.';
+    }
     if (stick) scrollDown();
     state.run = null;
     renderHistory();
@@ -805,8 +821,8 @@ const connectionFields = new Map();
 let mcpCheck = 0;
 
 function settingError(message = '') {
-  $('settings-error').hidden = !message;
   $('settings-error').textContent = message;
+  if (message) $('settings-error').scrollIntoView({ block: 'nearest' });
 }
 
 function field(label, type, value, placeholder, required = false) {
@@ -950,27 +966,38 @@ $('tools-button').addEventListener('click', () => setToolsOpen($('tools-panel').
 document.addEventListener('click', event => {
   if (!$('chat-tools').contains(event.target)) setToolsOpen(false);
 });
+document.addEventListener('pointerdown', () => document.body.classList.remove('keyboard-navigation'), true);
+document.addEventListener('keydown', event => {
+  const editing = event.target.closest?.('input, textarea, [contenteditable]');
+  if (event.key === 'Tab' || event.key === 'Escape' || (!editing && navigationKeys.has(event.key))) {
+    document.body.classList.add('keyboard-navigation');
+  }
+}, true);
 
 const mobile = matchMedia('(max-width: 690px)');
-function hideMobileSidebar() {
-  document.body.classList.remove('sidebar-open');
-  $('scrim').hidden = true;
+function setMobileSidebar(open) {
+  document.body.classList.toggle('sidebar-open', open);
+  $('scrim').hidden = !open;
+  $('chat-main').inert = open;
+  $('open-sidebar').setAttribute('aria-expanded', String(open || !mobile.matches && !document.body.classList.contains('sidebar-collapsed')));
 }
-$('close-sidebar').addEventListener('click', () => {
-  if (mobile.matches) hideMobileSidebar();
-  else document.body.classList.add('sidebar-collapsed');
+function hideMobileSidebar() {
+  setMobileSidebar(false);
+}
+function closeSidebar() {
+  if (!mobile.matches) document.body.classList.add('sidebar-collapsed');
+  hideMobileSidebar();
   $('open-sidebar').focus();
-});
+}
+$('close-sidebar').addEventListener('click', closeSidebar);
 $('open-sidebar').addEventListener('click', () => {
   document.body.classList.remove('sidebar-collapsed');
-  if (mobile.matches) {
-    document.body.classList.add('sidebar-open');
-    $('scrim').hidden = false;
-  }
+  setMobileSidebar(mobile.matches);
   $('close-sidebar').focus();
 });
-$('scrim').addEventListener('click', hideMobileSidebar);
+$('scrim').addEventListener('click', closeSidebar);
 mobile.addEventListener('change', hideMobileSidebar);
+hideMobileSidebar();
 function closeHistoryMenu() {
   $('history').querySelector('.history-menu:popover-open')?.hidePopover();
 }
@@ -1014,7 +1041,7 @@ $('sidebar').addEventListener('keydown', event => {
   event.preventDefault();
 });
 document.addEventListener('keydown', event => {
-  if (event.defaultPrevented || event.key !== 'Escape' || confirmDelete.open ||
+  if (event.defaultPrevented || event.key !== 'Escape' || settingsDialog.open || confirmDelete.open ||
       $('history').querySelector('.history-menu:popover-open')) return;
   if (!$('tools-panel').hidden) {
     setToolsOpen(false);
@@ -1022,8 +1049,7 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (document.body.classList.contains('sidebar-open')) {
-    hideMobileSidebar();
-    $('open-sidebar').focus();
+    closeSidebar();
   }
 });
 

@@ -9,11 +9,11 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <aside class="sidebar" id="sidebar">
+  <aside class="sidebar" id="sidebar" aria-label="Chat sidebar">
     <div class="brand">
       <span class="brand-mark"><svg aria-hidden="true"><use href="/icons.svg#logo"/></svg></span>
       <span>Serenity</span>
-      <button type="button" class="icon sidebar-toggle" id="close-sidebar" title="Hide sidebar" aria-label="Hide sidebar"><svg><use href="/icons.svg#panel"/></svg></button>
+      <button type="button" class="icon sidebar-toggle" id="close-sidebar" title="Hide sidebar" aria-label="Hide sidebar" aria-controls="sidebar"><svg aria-hidden="true"><use href="/icons.svg#panel"/></svg></button>
     </div>
     <button type="button" class="new-chat" id="new-chat"><svg><use href="/icons.svg#plus"/></svg>New chat</button>
     <div class="history-heading">
@@ -25,15 +25,15 @@
       <button type="button" class="settings-button" data-open-settings><svg><use href="/icons.svg#gear"/></svg>Settings</button>
     </div>
   </aside>
-  <button type="button" id="scrim" class="scrim" aria-label="Close sidebar" hidden></button>
+  <div id="scrim" class="scrim" aria-hidden="true" hidden></div>
 
-  <main>
+  <main id="chat-main">
     <header class="toolbar">
-      <button type="button" class="icon" id="open-sidebar" title="Show sidebar" aria-label="Show sidebar"><svg><use href="/icons.svg#panel"/></svg></button>
+      <button type="button" class="icon" id="open-sidebar" title="Show sidebar" aria-label="Show sidebar" aria-controls="sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="/icons.svg#panel"/></svg></button>
     </header>
 
     <div class="stage" id="stage">
-      <section class="thread" id="thread" aria-label="Messages" hidden></section>
+      <section class="thread" id="thread" aria-label="Messages" tabindex="0" hidden></section>
       <div class="intro">
         <div class="intro-mark"><svg aria-hidden="true"><use href="/icons.svg#logo"/></svg></div>
         <h1>Ask a question</h1>
@@ -42,7 +42,8 @@
 
     <div class="dock">
       <div class="model-notice" id="model-notice" hidden><span id="model-error"></span><button type="button" id="retry-models">Retry</button><button type="button" data-open-settings>Settings</button></div>
-      <div class="status" id="status" role="status" hidden></div>
+      <div class="status" id="status" role="status"></div>
+      <div class="visually-hidden" id="chat-announcement" role="status"></div>
       <ul class="follow-ups" id="follow-ups" aria-label="Pending messages" hidden></ul>
       <form class="composer" id="composer">
         <div id="attachments" class="attachments" hidden></div>
@@ -52,7 +53,7 @@
           <button type="button" class="icon" id="attach" title="Attach files" aria-label="Attach files"><svg><use href="/icons.svg#plus"/></svg></button>
           <div class="chat-tools" id="chat-tools">
             <button type="button" class="tools-button" id="tools-button" aria-label="Tools" aria-expanded="false" aria-controls="tools-panel">
-              <svg aria-hidden="true"><use href="/icons.svg#plug"/></svg><span>Tools</span>
+              <svg aria-hidden="true"><use href="/icons.svg#plug"/></svg><span class="tools-label">Tools</span>
             </button>
             <div class="tools-panel" id="tools-panel" hidden>
               <fieldset id="tool-options"><legend>Tools for this chat</legend><div id="tool-switches"></div></fieldset>
@@ -118,7 +119,7 @@
           <div id="connections"></div>
           <button type="button" class="secondary" id="add-mcp"><svg><use href="/icons.svg#plus"/></svg>Add connection</button>
         </section>
-        <p id="settings-error" role="alert" hidden></p>
+        <p id="settings-error" role="alert"></p>
       </div>
       <div class="dialog-actions"><button type="button" class="secondary" data-close-settings>Cancel</button><button class="primary" id="save-settings">Save</button></div>
     </form>
