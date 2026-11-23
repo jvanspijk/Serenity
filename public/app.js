@@ -390,11 +390,9 @@ function makeMessage(message, options = {}) {
   function update(streaming, activity = '') {
     details.hidden = !message.reasoning;
     reasoning.textContent = message.reasoning;
-    // Partial lines may contain unfinished Markdown delimiters.
-    const length = streaming ? message.content.lastIndexOf('\n') + 1 : message.content.length;
-    if (length !== renderedLength) {
-      updateMarkdown(body, message.content.slice(0, length));
-      renderedLength = length;
+    if (message.content.length !== renderedLength) {
+      updateMarkdown(body, message.content);
+      renderedLength = message.content.length;
     }
     pending.hidden = !streaming || Boolean(body.firstChild && !activity);
     pending.textContent = activity || (message.content ? 'Writing reply…' :
@@ -520,6 +518,18 @@ async function submit(retry = false) {
   const assistant = makeMessage(reply, { streaming: true, canRetry: true });
   let started = false;
   let finished = false;
+  let updateFrame = 0;
+  let activity = '';
+  function scheduleUpdate(nextActivity = '') {
+    activity = nextActivity;
+    if (updateFrame) return;
+    updateFrame = requestAnimationFrame(() => {
+      updateFrame = 0;
+      const stick = nearBottom();
+      assistant.update(true, activity);
+      if (stick) scrollDown();
+    });
+  }
   const notices = new Set();
   state.busy = true;
   state.stopping = false;
@@ -540,7 +550,6 @@ async function submit(retry = false) {
     });
     for await (const frame of sse(response.body)) {
       const event = JSON.parse(frame);
-      const stick = nearBottom();
       if (event.type === 'start') {
         started = true;
         state.streamId = event.chat.id;
@@ -566,9 +575,9 @@ async function submit(retry = false) {
         scrollDown();
       } else if (event.type === 'content' || event.type === 'reasoning') {
         reply[event.type] += event.text;
-        assistant.update(true);
+        scheduleUpdate();
       } else if (event.type === 'tool') {
-        assistant.update(true, 'Using ' + event.text);
+        scheduleUpdate('Using ' + event.text);
       } else if (event.type === 'notice') {
         notices.add(event.text);
         status([...notices].join(' '));
@@ -578,13 +587,13 @@ async function submit(retry = false) {
         reply.stats = event.stats;
         renderStats();
       }
-      if (stick) scrollDown();
     }
     if (!finished) throw new Error('The connection closed before the reply finished.');
   } catch (error) {
     if (started) reply.issue = error.message;
     else status(error.message);
   } finally {
+    if (updateFrame) cancelAnimationFrame(updateFrame);
     const stick = nearBottom();
     if (started) assistant.update(false);
     if (stick) scrollDown();

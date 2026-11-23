@@ -36,17 +36,34 @@ export function updateMarkdown(target, text) {
   template.innerHTML = markdown.render(text).trim();
 
   // Later lines can change earlier Markdown, for example by defining a reference link.
-  // Reparse the full prefix while keeping the DOM for unchanged blocks.
+  // Reparse the full text while keeping matching elements and growing text in place.
+  updateChildren(target, template.content);
+}
+
+function updateChildren(target, source) {
   let current = target.firstChild;
-  const next = template.content;
-  while (current && next.firstChild && current.isEqualNode(next.firstChild)) {
-    current = current.nextSibling;
-    next.firstChild.remove();
+  for (const next of [...source.childNodes]) {
+    if (!current) {
+      target.append(next);
+      continue;
+    }
+    const sibling = current.nextSibling;
+    if (!current.isEqualNode(next)) {
+      if (current.nodeType === Node.TEXT_NODE && next.nodeType === Node.TEXT_NODE) {
+        current.data = next.data;
+      } else if (current.nodeType === Node.ELEMENT_NODE && current.nodeName === next.nodeName &&
+        current.attributes.length === next.attributes.length &&
+        next.getAttributeNames().every(name => current.getAttribute(name) === next.getAttribute(name))) {
+        updateChildren(current, next);
+      } else {
+        current.replaceWith(next);
+      }
+    }
+    current = sibling;
   }
   while (current) {
     const sibling = current.nextSibling;
     current.remove();
     current = sibling;
   }
-  target.append(next);
 }
