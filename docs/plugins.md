@@ -59,7 +59,7 @@ Tool code with a workspace grant can read the configured path from `process.env.
 
 ```yaml
 services:
-  sage-chat:
+  serenity:
     environment:
       PLUGIN_WORKSPACE: /workspace
     volumes:
@@ -70,4 +70,4 @@ Use the Node permission system as an extra safeguard for reviewed code. Node fol
 
 ## Try the example
 
-Copy `examples/word-count` to `plugins/word-count`. Restart Serenity (`docker compose up --build -d sage-chat` for Compose, or restart `npm start` for source). Open Settings to see **Word count**, enable it in a chat, and ask for a precise count. New plugin folders are discovered at startup.
+Copy `examples/word-count` to `plugins/word-count`. Restart Serenity (`docker compose up --build -d serenity` for Compose, or restart `npm start` for source). Open Settings to see **Word count**, enable it in a chat, and ask for a precise count. New plugin folders are discovered at startup.

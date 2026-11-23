@@ -1,5 +1,7 @@
+name: serenity
+
 services:
-  sage-chat:
+  serenity:
     build: .
     init: true
     ports:
@@ -10,8 +12,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - sage-data:/data
+      - serenity-data:/data
       - ./plugins:/data/plugins:ro
 
 volumes:
-  sage-data:
+  serenity-data:
