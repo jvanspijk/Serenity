@@ -880,11 +880,16 @@ async function checkMcp() {
   }
 }
 
+function applySettings(config) {
+  state.settings = config;
+  document.documentElement.dataset.chatTextSize = config.chatTextSize;
+}
+
 async function openSettings() {
   try {
     const config = await api('settings');
     if (settingsDialog.open) return;
-    state.settings = config;
+    applySettings(config);
     renderTools();
     renderControls();
     renderStats();
@@ -893,6 +898,7 @@ async function openSettings() {
     $('api-key').placeholder = config.hasToken ? 'Saved' : 'Optional';
     $('system-prompt').value = config.systemPrompt;
     $('show-inference-stats').checked = config.showInferenceStats;
+    $('chat-text-size').value = config.chatTextSize;
     $('follow-up-behavior').value = config.followUpBehavior;
     $('share-timezone').checked = config.shareTimezone;
     $('tool-defaults').replaceChildren(...config.tools.map(({ id, label, description, permissions, enabledByDefault }) => {
@@ -931,11 +937,12 @@ $('settings-form').addEventListener('submit', async event => {
   settingError();
   const token = $('api-key').value;
   try {
-    state.settings = await api('settings', 'PUT', {
+    const config = await api('settings', 'PUT', {
       endpoint: $('endpoint').value.trim(),
       ...(token && { token }),
       systemPrompt: $('system-prompt').value,
       showInferenceStats: $('show-inference-stats').checked,
+      chatTextSize: $('chat-text-size').value,
       followUpBehavior: $('follow-up-behavior').value,
       shareTimezone: $('share-timezone').checked,
       toolDefaults: Array.from($('tool-defaults').querySelectorAll('input:checked'), input => input.value),
@@ -944,6 +951,7 @@ $('settings-form').addEventListener('submit', async event => {
         ...(key.value && { token: key.value })
       }))
     });
+    applySettings(config);
     renderTools();
     renderStats();
     settingsDialog.close();
@@ -1161,7 +1169,7 @@ document.addEventListener('drop', event => {
 
 renderControls();
 refreshModels();
-api('settings').then(config => { state.settings = config; renderTools(); renderControls(); renderStats(); }).catch(error => status(error.message));
+api('settings').then(config => { applySettings(config); renderTools(); renderControls(); renderStats(); }).catch(error => status(error.message));
 api('chats').then(list => {
   state.list = list;
   renderHistory();

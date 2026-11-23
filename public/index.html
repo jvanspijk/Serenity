@@ -87,6 +87,15 @@
       </div>
       <div class="settings-body">
         <section class="settings-section">
+          <label>Chat text size
+            <select id="chat-text-size">
+              <option value="small">Small</option>
+              <option value="medium" selected>Medium</option>
+              <option value="large">Large</option>
+            </select>
+          </label>
+        </section>
+        <section class="settings-section">
           <h3>Inference server</h3>
           <label>OpenAI-compatible URL<input required type="url" id="endpoint" placeholder="http://host.docker.internal:11434/v1" spellcheck="false"></label>
           <label>API key<input type="password" id="api-key" placeholder="Optional" autocomplete="off"></label>

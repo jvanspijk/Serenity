@@ -22,8 +22,14 @@
   --user-message-border: color-mix(in srgb, var(--highlight) 26%, var(--line));
   --reasoning-border: color-mix(in srgb, var(--highlight) 62%, var(--canvas));
   --reasoning-label: color-mix(in srgb, var(--highlight) 60%, var(--text));
+  --font-size-chat-small: 1rem;
+  --font-size-chat-medium: 1.1rem;
+  --font-size-chat-large: 1.2rem;
+  --font-size-chat: var(--font-size-chat-medium);
   font: 100%/1.5 system-ui, sans-serif;
 }
+:root[data-chat-text-size="small"] { --font-size-chat: var(--font-size-chat-small); }
+:root[data-chat-text-size="large"] { --font-size-chat: var(--font-size-chat-large); }
 * { box-sizing: border-box; word-spacing: .085em; }
 [hidden] { display: none !important; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -115,7 +121,10 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: r
 .message.assistant { width: 100%; }
 .answer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--accent); }
 .answer-head svg { width: 17px; height: 17px; }
-.message-text, .reasoning-text, .composer textarea { letter-spacing: .02em; }
+.message-text, .reasoning-text, .composer textarea {
+  font-size: var(--font-size-chat);
+  letter-spacing: .02em;
+}
 .message-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .message-text :is(p, li, blockquote) { max-inline-size: 67ch; }
 .message-text a { color: var(--highlight); text-underline-offset: 3px; }

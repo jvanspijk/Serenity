@@ -29,6 +29,7 @@ const defaults = {
   token: process.env.INFERENCE_API_KEY || '',
   systemPrompt: '',
   showInferenceStats: false,
+  chatTextSize: 'medium',
   followUpBehavior: 'queue',
   shareTimezone: false,
   mcp: []
@@ -89,9 +90,9 @@ const settings = async () => {
 const chatPath = id => join(chats, id + '.json');
 const summary = ({ id, title, model, updated }) => ({ id, title, model, updated });
 
-function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
+function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, chatTextSize, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
   return {
-    endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, followUpBehavior,
+    endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, chatTextSize, followUpBehavior,
     shareTimezone: shareTimezone === true, webSearchByDefault: toolDefaults.includes('webSearch'),
     tools: availableTools.map(({ id, label, description, permissions }) => ({
       id, label, description, permissions, enabledByDefault: toolDefaults.includes(id)
@@ -467,6 +468,8 @@ createServer(async (req, res) => {
       if (typeof shareTimezone !== 'boolean') fail(400, 'Invalid privacy setting.');
       const showInferenceStats = input.showInferenceStats ?? current.showInferenceStats;
       if (typeof showInferenceStats !== 'boolean') fail(400, 'Invalid inference statistics setting.');
+      const chatTextSize = input.chatTextSize ?? current.chatTextSize;
+      if (!['small', 'medium', 'large'].includes(chatTextSize)) fail(400, 'Invalid chat text size.');
       const followUpBehavior = input.followUpBehavior ?? current.followUpBehavior;
       if (!['queue', 'interrupt'].includes(followUpBehavior)) fail(400, 'Invalid follow-up behavior.');
       if (!Array.isArray(input.mcp) || input.mcp.length > 12) fail(400, 'Add up to 12 MCP connections.');
@@ -489,7 +492,7 @@ createServer(async (req, res) => {
         endpoint === endpointUrl(current.endpoint) ? current.token : '';
       if (input.toolDefaults !== undefined && !validToolIds(input.toolDefaults)) fail(400, 'Invalid tool defaults.');
       const toolDefaults = selectedBuiltIns(input.toolDefaults, input.webSearchByDefault ?? undefined, current.toolDefaults);
-      const next = { endpoint, token, systemPrompt, showInferenceStats, followUpBehavior, shareTimezone, toolDefaults, mcp };
+      const next = { endpoint, token, systemPrompt, showInferenceStats, chatTextSize, followUpBehavior, shareTimezone, toolDefaults, mcp };
       await save(configPath, next);
       return send(res, 200, publicSettings(next));
     }
