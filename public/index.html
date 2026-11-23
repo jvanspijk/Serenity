@@ -9,29 +9,30 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <aside class="sidebar" id="sidebar" aria-label="Chat sidebar">
-    <div class="brand">
-      <span class="brand-mark"><svg aria-hidden="true"><use href="/icons.svg#logo"/></svg></span>
-      <span>Serenity</span>
-      <button type="button" class="icon sidebar-toggle" id="close-sidebar" title="Hide sidebar" aria-label="Hide sidebar" aria-controls="sidebar"><svg aria-hidden="true"><use href="/icons.svg#panel"/></svg></button>
+  <div class="sidebar-controls">
+    <div class="sidebar-heading">
+      <div class="brand sidebar-label">
+        <span class="brand-mark"><svg aria-hidden="true"><use href="/icons.svg#logo"/></svg></span>
+        <span>Serenity</span>
+      </div>
+      <button type="button" class="icon sidebar-toggle" id="sidebar-toggle" title="Hide sidebar" aria-label="Hide sidebar" aria-controls="sidebar" aria-expanded="true"><svg aria-hidden="true"><use class="panel-open" href="/icons.svg#panel-open"/><use class="panel-closed" href="/icons.svg#panel-closed"/></svg></button>
     </div>
-    <button type="button" class="new-chat" id="new-chat"><svg><use href="/icons.svg#plus"/></svg>New chat</button>
+    <button type="button" class="new-chat" id="new-chat" title="New chat" aria-label="New chat"><svg aria-hidden="true"><use href="/icons.svg#plus"/></svg><span class="sidebar-label">New chat</span></button>
+  </div>
+
+  <aside class="sidebar" id="sidebar" aria-label="Chat sidebar">
     <div class="history-heading">
       <h2>Conversations</h2>
       <button type="button" class="history-bulk-delete" id="delete-selected" aria-keyshortcuts="Delete Meta+Backspace" hidden></button>
     </div>
     <nav id="history" aria-label="Conversations"></nav>
-    <div class="sidebar-footer">
-      <button type="button" class="settings-button" data-open-settings><svg><use href="/icons.svg#gear"/></svg>Settings</button>
-    </div>
   </aside>
-  <div id="scrim" class="scrim" aria-hidden="true" hidden></div>
+  <div class="sidebar-footer">
+    <button type="button" class="settings-button" data-open-settings title="Settings" aria-label="Settings"><svg aria-hidden="true"><use href="/icons.svg#gear"/></svg><span class="sidebar-label">Settings</span></button>
+  </div>
+  <div id="scrim" class="scrim" aria-hidden="true"></div>
 
   <main id="chat-main">
-    <header class="toolbar">
-      <button type="button" class="icon" id="open-sidebar" title="Show sidebar" aria-label="Show sidebar" aria-controls="sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="/icons.svg#panel"/></svg></button>
-    </header>
-
     <div class="stage" id="stage">
       <section class="thread" id="thread" aria-label="Messages" tabindex="0" hidden></section>
       <div class="intro">

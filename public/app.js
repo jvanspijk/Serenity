@@ -983,11 +983,16 @@ document.addEventListener('keydown', event => {
 }, true);
 
 const mobile = matchMedia('(max-width: 690px)');
+const sidebarToggle = $('sidebar-toggle');
 function setMobileSidebar(open) {
   document.body.classList.toggle('sidebar-open', open);
-  $('scrim').hidden = !open;
   $('chat-main').inert = open;
-  $('open-sidebar').setAttribute('aria-expanded', String(open || !mobile.matches && !document.body.classList.contains('sidebar-collapsed')));
+  const expanded = open || !mobile.matches && !document.body.classList.contains('sidebar-collapsed');
+  $('sidebar').inert = !expanded;
+  const label = expanded ? 'Hide sidebar' : 'Show sidebar';
+  sidebarToggle.setAttribute('aria-expanded', String(expanded));
+  sidebarToggle.setAttribute('aria-label', label);
+  sidebarToggle.title = label;
 }
 function hideMobileSidebar() {
   setMobileSidebar(false);
@@ -995,13 +1000,15 @@ function hideMobileSidebar() {
 function closeSidebar() {
   if (!mobile.matches) document.body.classList.add('sidebar-collapsed');
   hideMobileSidebar();
-  $('open-sidebar').focus();
+  sidebarToggle.focus();
 }
-$('close-sidebar').addEventListener('click', closeSidebar);
-$('open-sidebar').addEventListener('click', () => {
+sidebarToggle.addEventListener('click', () => {
+  if (sidebarToggle.getAttribute('aria-expanded') === 'true') {
+    closeSidebar();
+    return;
+  }
   document.body.classList.remove('sidebar-collapsed');
   setMobileSidebar(mobile.matches);
-  $('close-sidebar').focus();
 });
 $('scrim').addEventListener('click', closeSidebar);
 mobile.addEventListener('change', hideMobileSidebar);
