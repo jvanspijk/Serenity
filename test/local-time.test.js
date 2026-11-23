@@ -23,7 +23,7 @@ test('local time reaches the model and timezone sharing is enforced', async () =
   await new Promise(resolve => reserve.close(resolve));
   const data = await mkdtemp(join(tmpdir(), 'serenity-time-'));
   const app = spawn(process.execPath, ['server.js'], {
-    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), DATA_DIR: data,
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), DATA_DIR: data, SERENITY_WORKSPACE_DIR: join(data, 'workspaces'),
       INFERENCE_URL: `http://127.0.0.1:${inference.address().port}/v1` },
     stdio: ['ignore', 'pipe', 'pipe']
   });

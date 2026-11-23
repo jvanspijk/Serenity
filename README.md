@@ -21,6 +21,8 @@ python -m pip install -r requirements.txt
 
 Serenity uses `python` on Windows and `python3` elsewhere. Set `SERENITY_PYTHON` to the Python executable if needed, for example when using a virtual environment. Python and DDGS are not required for chat without web search.
 
+To upload PDFs without Docker, install Poppler and make `pdfinfo` and `pdftoppm` available on PATH.
+
 You can set `HOST`, `PORT`, `DATA_DIR`, `INFERENCE_URL`, and `INFERENCE_API_KEY` as environment variables before starting the server.
 
 ## Run with Docker
@@ -55,5 +57,7 @@ node --test
 ## Data and plugins
 
 Chats and settings are stored in the Docker volume, or in `./data` when running from source. Settings can include API keys and MCP tokens; protect the data and its backups. Serenity has no authentication, so keep it on localhost or behind an authenticated reverse proxy.
+
+Attachments use a temporary workspace for each conversation. The workspace holds up to 250 MiB, including compressed WebP images and PDF pages. Deleting a conversation removes its workspace. Temp cleanup or container replacement can remove attachments from an otherwise preserved transcript. Model requests include local file links. Opening those links requires a separate file reader.
 
 Place trusted plugin folders in `plugins/` and restart the app. See the [plugin guide](docs/plugins.md) and [example plugin](examples/word-count/). Web tools and MCP connections are configured in the app and require a model that supports tool calls.

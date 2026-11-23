@@ -2,6 +2,8 @@
 !package.json
 !package-lock.json
 !server.js
+!multipart.js
+!workspace.js
 !tool-registry.js
 !plugin-sdk.js
 !plugin-runner.mjs

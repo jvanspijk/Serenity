@@ -45,9 +45,12 @@ function iconButton(name, label, className = 'icon') {
 }
 
 async function request(path, method = 'GET', data) {
+  const multipart = data instanceof FormData;
   const response = await fetch('/api/' + path, {
     method,
-    ...(data !== undefined && { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+    ...(multipart ? { body: data } : data !== undefined && {
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+    })
   });
   if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || 'Could not reach Serenity.');
   return response;
@@ -369,21 +372,27 @@ function makeMessage(message, options = {}) {
   });
   if (message.role === 'user') {
     const bubble = element('div', 'user-bubble');
-    if (message.images?.length) {
-      const images = element('div', 'message-images');
-      for (const image of message.images) {
+    const images = element('div', 'message-images');
+    const files = element('div', 'message-files');
+    for (const attachment of message.attachments || []) {
+      const chip = () => element('span', 'file-name',
+        attachment.name + (attachment.available ? '' : ' (unavailable)'));
+      if (attachment.url) {
         const img = element('img');
-        img.alt = image.name;
-        img.src = image.url;
+        img.alt = attachment.name;
+        img.loading = 'lazy';
+        img.addEventListener('error', () => {
+          attachment.available = false;
+          img.replaceWith(chip());
+        }, { once: true });
+        img.src = attachment.url;
         images.append(img);
+      } else {
+        files.append(chip());
       }
-      bubble.append(images);
     }
-    if (message.files?.length) {
-      const files = element('div', 'message-files');
-      for (const file of message.files) files.append(element('span', 'file-name', file.name));
-      bubble.append(files);
-    }
+    if (images.childElementCount) bubble.append(images);
+    if (files.childElementCount) bubble.append(files);
     bubble.prepend(element('div', 'user-label', 'You'));
     bubble.append(element('div', 'message-text', message.content));
     article.append(bubble);
@@ -536,7 +545,6 @@ function editFollowUp(message) {
   navigation++;
   const prompt = $('prompt');
   followUpEdit = { message, draft: prompt.value, attachments: state.attachments, waiting: false };
-  draftVersion++;
   prompt.value = message.content;
   state.attachments = [...message.attachments];
   setToolsOpen(false);
@@ -555,7 +563,6 @@ function finishFollowUpEdit(save, interrupt = false) {
     message.attachments = state.attachments;
   }
   followUpEdit = null;
-  draftVersion++;
   prompt.value = draft;
   state.attachments = attachments;
   if (interrupt) prioritizeFollowUp(message);
@@ -566,9 +573,7 @@ function finishFollowUpEdit(save, interrupt = false) {
 }
 
 let navigation = 0;
-let draftVersion = 0;
 function clearDraft() {
-  draftVersion++;
   $('prompt').value = '';
   state.attachments = [];
 }
@@ -657,8 +662,6 @@ function sendNext() {
 
 async function submit(message, retry = false) {
   const { model, content = '', attachments = [] } = message;
-  const images = attachments.filter(item => item.url);
-  const files = attachments.filter(item => !item.url);
   const id = state.chat?.id;
   const reply = { role: 'assistant', model, content: '', reasoning: '' };
   const assistant = makeMessage(reply, { streaming: true, canRetry: true });
@@ -681,7 +684,7 @@ async function submit(message, retry = false) {
   navigation++;
   setToolsOpen(false);
   status();
-  $('chat-announcement').textContent = 'Waiting for reply.';
+  $('chat-announcement').textContent = attachments.length ? 'Uploading attachments.' : 'Waiting for reply.';
   renderHistory();
   renderFollowUps();
   renderAttachments();
@@ -689,21 +692,30 @@ async function submit(message, retry = false) {
     const now = new Date();
     const localDateTime = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-') +
       ' ' + [now.getHours(), now.getMinutes()].map(value => String(value).padStart(2, '0')).join(':');
-    const response = await request('chat', 'POST', {
-      id, model, content, images, files, retry,
+    const input = {
+      id, model, content, retry,
       localDateTime, ...(state.settings?.shareTimezone && { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       ...(!id && state.draftTools && { tools: state.draftTools })
-    });
+    };
+    let body = input;
+    if (attachments.length) {
+      body = new FormData();
+      body.append('message', JSON.stringify(input));
+      for (const { file } of attachments) body.append('files', file);
+      status('Uploading attachments…');
+    }
+    const response = await request('chat', 'POST', body);
     for await (const frame of sse(response.body)) {
       const event = JSON.parse(frame);
       if (event.type === 'start') {
         started = true;
+        if (attachments.length) status();
         run.chatId = event.chat.id;
         run.replyId = event.replyId;
         if (run.stopRequested) stopStream(run);
         const messages = state.chat?.messages || [];
         if (retry) messages.pop();
-        else messages.push({ role: 'user', content, images, files });
+        else messages.push({ role: 'user', content, attachments: event.attachments });
         messages.push(reply);
         state.chat = { ...event.chat, messages, tools: event.tools };
         syncTools();
@@ -782,38 +794,49 @@ async function stopStream(run) {
   }
 }
 
-function readImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, url: reader.result });
-    reader.onerror = () => reject(new Error('Could not read ' + file.name + '.'));
-    reader.readAsDataURL(file);
-  });
+async function preparePreview(attachment) {
+  const source = URL.createObjectURL(attachment.file);
+  try {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    const scale = Math.min(1, 144 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+    attachment.url = canvas.toDataURL('image/webp');
+    const index = state.attachments.indexOf(attachment);
+    if (index !== -1) {
+      const tile = $('attachments').children[index];
+      const label = tile?.querySelector('.file-name');
+      if (label) {
+        const preview = element('img');
+        preview.src = attachment.url;
+        preview.alt = attachment.name;
+        label.replaceWith(preview);
+      }
+    }
+  } catch {
+    // An unsupported preview still has its filename and can be uploaded.
+  } finally {
+    URL.revokeObjectURL(source);
+  }
 }
 
-async function attach(files) {
-  const candidates = [...files];
-  const slots = 4 - state.attachments.length;
-  const draft = draftVersion;
-  try {
-    const selected = candidates.slice(0, slots);
-    const attachments = await Promise.all(selected.map(async file => {
-      if (/^image\/(png|jpeg|webp|gif)$/.test(file.type) && file.size <= 5 * 1024 * 1024) return readImage(file);
-      if (file.size > 128 * 1024 ||
-          (file.type && !/^(text\/|application\/(json|javascript|xml|x-yaml|toml)(?:$|;))/.test(file.type)) ||
-          /\.(pdf|docx?|xlsx?|pptx?|zip)$/i.test(file.name)) return null;
-      try {
-        const content = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
-        return content.includes('\0') || content.length > 100000 ? null : { name: file.name, content };
-      } catch { return null; }
-    }));
-    if (draft !== draftVersion) return;
-    state.attachments.push(...attachments.filter(Boolean).slice(0, 4 - state.attachments.length));
-    status(attachments.some(item => !item) || candidates.length > slots ?
-      'Attach up to four images (5 MB each) or UTF-8 text files (128 KB each).' : '');
-    renderAttachments();
-    $('prompt').focus();
-  } catch (error) { status(error.message); }
+let previewQueue = Promise.resolve();
+function attach(files) {
+  for (const file of files) {
+    const attachment = { name: file.name, file };
+    state.attachments.push(attachment);
+    if (/^image\/(?:avif|gif|jpeg|png|webp)$/.test(file.type)) {
+      previewQueue = previewQueue.then(() => {
+        if (state.attachments.includes(attachment)) return preparePreview(attachment);
+      });
+    }
+  }
+  renderAttachments();
+  $('prompt').focus();
 }
 
 const settingsDialog = $('settings');
@@ -1131,10 +1154,10 @@ $('files').addEventListener('change', event => {
 });
 $('prompt').addEventListener('input', renderControls);
 $('prompt').addEventListener('paste', event => {
-  const images = [...event.clipboardData?.files || []].filter(file => file.type.startsWith('image/'));
-  if (images.length) {
+  const files = event.clipboardData?.files;
+  if (files?.length) {
     event.preventDefault();
-    attach(images);
+    attach(files);
   }
 });
 const touchKeyboard = matchMedia('(pointer: coarse)');

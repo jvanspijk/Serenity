@@ -6,6 +6,8 @@ import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
+import { readMultipart } from './multipart.js';
+import { attachmentMarkdown, attachmentPresentation, attachmentPreview, deleteWorkspace, withWorkspace } from './workspace.js';
 
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 8080);
@@ -90,10 +92,11 @@ async function load(path, fallback) {
   }
 }
 
-async function save(path, value) {
+async function save(path, value, signal) {
   const temp = path + '.' + randomUUID() + '.tmp';
   try {
     await writeFile(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+    signal?.throwIfAborted();
     await rename(temp, path);
   } finally {
     await rm(temp, { force: true });
@@ -172,7 +175,7 @@ async function readJson(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 28 * 1024 * 1024) fail(413, 'Attachments exceed the upload limit.');
+    if (size > 28 * 1024 * 1024) fail(413, 'The JSON request is too large.');
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks)); }
@@ -295,36 +298,22 @@ function recordUsage(reply, usage, timings) {
   if (Object.keys(stats).length) reply.stats = stats;
 }
 
-function modelMessage(message) {
-  const { role, content, images, files } = message;
-  const text = [content, ...(files || []).map(file =>
-    'File: ' + file.name + '\n```\n' + file.content.replaceAll('```', '` ` `') + '\n```')].filter(Boolean).join('\n\n');
-  if (!images?.length) return { role, content: text };
-  return { role, content: [
-    ...(text ? [{ type: 'text', text }] : []),
-    ...images.map(image => ({ type: 'image_url', image_url: { url: image.url } }))
-  ] };
+async function modelMessage(chatId, { role, content, attachments }) {
+  const links = await attachmentMarkdown(chatId, attachments);
+  return { role, content: [content, links].filter(Boolean).join('\n\n') };
 }
 
-async function generate(res, input) {
+async function presentAttachments(chatId, attachments) {
+  return await Promise.all(attachments.map(attachment => attachmentPresentation(chatId, attachment)));
+}
+
+async function generate(res, input, receive = async () => {}) {
   const { id, model, retry } = input;
   if (id && !uuid.test(id)) fail(400, 'Invalid conversation.');
   if (typeof model !== 'string' || !model.trim() || model.length > 500) fail(400, 'Choose a model first.');
   const content = typeof input.content === 'string' ? input.content.trim() : '';
-  const images = input.images ?? [];
-  const files = input.files ?? [];
   if (content.length > 100000) fail(400, 'This message is too long.');
-  if (!Array.isArray(images) || images.length > 4 || images.some(image =>
-    typeof image?.url !== 'string' || image.url.length > 7 * 1024 * 1024 ||
-    !/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/]+=*$/i.test(image.url))) {
-    fail(400, 'Attach up to four PNG, JPEG, WebP or GIF images, at most 5 MB each.');
-  }
-  if (!Array.isArray(files) || files.length + images.length > 4 || files.some(file =>
-    typeof file?.name !== 'string' || !file.name || file.name.length > 160 ||
-    typeof file.content !== 'string' || file.content.length > 100000 || file.content.includes('\0'))) {
-    fail(400, 'Attach up to four images or UTF-8 text files, at most 100,000 characters per text file.');
-  }
-  if (!retry && !content && !images.length && !files.length) fail(400, 'Enter a message or attach a file.');
+  if (input.images?.length || input.files?.length) fail(400, 'Refresh Serenity to upload files.');
   const chatId = id || randomUUID();
   if (active.has(chatId)) fail(409, 'A reply is already running for this conversation.');
   if (editing.has(chatId)) fail(409, 'This conversation is being updated.');
@@ -334,6 +323,7 @@ async function generate(res, input) {
   const sessions = [];
   const disconnected = () => controller.abort();
   res.on('close', disconnected);
+  if (res.destroyed) disconnected();
   const emit = (type, fields = {}) => {
     if (!res.destroyed) res.write('data: ' + JSON.stringify({ type, ...fields }) + '\n\n');
   };
@@ -347,7 +337,7 @@ async function generate(res, input) {
     const timezone = config.shareTimezone === true && typeof input.timezone === 'string' &&
       /^[A-Za-z0-9_+\-/]{1,100}$/.test(input.timezone) ? input.timezone : '';
     if (config.shareTimezone === true && !timezone) fail(400, 'Refresh Serenity to share your local timezone.');
-    const history = chat || { id: chatId, title: content.replace(/\s+/g, ' ').slice(0, 58) || (files[0]?.name || 'Image chat'), messages: [] };
+    const history = chat || { id: chatId, title: '', messages: [] };
     const selected = chat ? chat.tools || {} : input.tools === undefined ? {
       builtIn: config.toolDefaults, mcp: config.mcp.filter(server => server.enabledByDefault).map(server => server.id)
     } : validateTools(input.tools);
@@ -355,19 +345,24 @@ async function generate(res, input) {
     if (retry) {
       const last = history.messages.at(-1);
       if (last?.role !== 'assistant' || !last.issue) fail(409, 'There is no interrupted reply to retry.');
-      history.messages.pop();
-    } else {
-      history.messages.push({ role: 'user', content, files: files.map(file => ({ name: file.name, content: file.content })), images: images.map(image => ({
-        url: image.url, name: typeof image.name === 'string' ? image.name.slice(0, 160) : 'Image'
-      })) });
     }
     const reply = { role: 'assistant', model, content: '', reasoning: '', issue: 'Reply interrupted.' };
-    history.messages.push(reply);
-    history.model = model;
-    history.updated = new Date().toISOString();
-    await save(chatPath(chatId), history);
+    const previousEntries = history.messages.flatMap(message => (message.attachments || []).map(attachment => attachment.entry));
+    const attachments = await withWorkspace(chatId, previousEntries, receive, controller.signal, async attachments => {
+      if (retry && attachments.length) fail(400, 'A reply retry cannot upload files.');
+      if (!retry && !content && !attachments.length) fail(400, 'Enter a message or attach a file.');
+      if (!chat) history.title = (content.replace(/\s+/g, ' ') || attachments[0]?.name).slice(0, 58);
+      if (retry) history.messages.pop();
+      else history.messages.push({ role: 'user', content, attachments });
+      history.messages.push(reply);
+      history.model = model;
+      history.updated = new Date().toISOString();
+      const presentation = await presentAttachments(chatId, attachments);
+      await save(chatPath(chatId), history, controller.signal);
+      return presentation;
+    });
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'X-Accel-Buffering': 'no' });
-    emit('start', { chat: summary(history), tools: history.tools, replyId });
+    emit('start', { chat: summary(history), tools: history.tools, replyId, attachments });
     const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 12000);
     const deadline = AbortSignal.timeout(15 * 60 * 1000);
     const signal = AbortSignal.any([controller.signal, deadline]);
@@ -409,7 +404,8 @@ async function generate(res, input) {
       ].filter(Boolean).join('\n\n');
       const messages = [
         { role: 'system', content: systemPrompt },
-        ...history.messages.slice(0, -1).filter(message => message.role === 'user' || message.content).map(modelMessage)
+        ...await Promise.all(history.messages.slice(0, -1)
+          .filter(message => message.role === 'user' || message.content).map(message => modelMessage(chatId, message)))
       ];
       for (let round = 0; round < 6; round++) {
         const { content: answer, calls, usage, timings } = await completion(config, model, messages, round < 5 ? declarations : [], write, signal);
@@ -463,7 +459,7 @@ createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   try {
     const { pathname, searchParams } = new URL(req.url, 'http://localhost');
     const method = req.method;
@@ -555,9 +551,25 @@ createServer(async (req, res) => {
       return send(res, 200, list.sort((a, b) => b.updated.localeCompare(a.updated)));
     }
     if (pathname === '/api/chat' && method === 'POST') {
+      if (/^multipart\/form-data(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
+        const upload = readMultipart(req);
+        try { return await generate(res, await upload.input, upload.receive); }
+        finally { await upload.close(); }
+      }
       const input = await readJson(req);
-      if (!input || typeof input !== 'object') fail(400, 'Invalid message.');
+      if (!input || typeof input !== 'object' || Array.isArray(input)) fail(400, 'Invalid message.');
       return await generate(res, input);
+    }
+    const preview = /^\/api\/chats\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname);
+    if (method === 'GET' && preview && uuid.test(preview[1]) && uuid.test(preview[2])) {
+      const [, chatId, attachmentId] = preview;
+      const chat = await load(chatPath(chatId));
+      const attachment = chat?.messages.flatMap(message => message.attachments || [])
+        .find(attachment => attachment.id === attachmentId);
+      const image = await attachmentPreview(chatId, attachment);
+      if (!image) fail(404, 'Attachment unavailable.');
+      res.writeHead(200, { 'Content-Type': 'image/webp', 'Content-Length': image.length });
+      return res.end(image);
     }
     const match = /^\/api\/chats\/([^/]+)(?:\/(stop|tools))?$/.exec(pathname);
     if (match && uuid.test(match[1])) {
@@ -572,6 +584,9 @@ createServer(async (req, res) => {
         const chat = await load(chatPath(id));
         if (!chat) fail(404, 'Conversation not found.');
         chat.tools = chatTools(chat.tools || {}, await settings());
+        await Promise.all(chat.messages.map(async message => {
+          if (message.attachments) message.attachments = await presentAttachments(id, message.attachments);
+        }));
         return send(res, 200, chat);
       }
       if ((!action && method === 'DELETE') || (action === 'tools' && method === 'PUT')) {
@@ -581,6 +596,7 @@ createServer(async (req, res) => {
         editing.add(id);
         try {
           if (!selection) {
+            await deleteWorkspace(id);
             await rm(chatPath(id), { force: true });
             return send(res, 200, {});
           }
@@ -596,6 +612,7 @@ createServer(async (req, res) => {
     }
     fail(404, 'Not found.');
   } catch (error) {
+    if (res.destroyed) return;
     if (!error.status) console.error(error);
     if (res.headersSent) return res.end();
     send(res, error.status || 500, { error: error.status ? error.message : 'The app could not complete the request.' });

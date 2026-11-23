@@ -10,6 +10,8 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "markdown-it": "15.0.3"
+    "busboy": "1.6.0",
+    "markdown-it": "15.0.3",
+    "sharp": "0.35.5"
   }
 }
