@@ -29,6 +29,7 @@ const defaults = {
   token: process.env.INFERENCE_API_KEY || '',
   systemPrompt: '',
   showInferenceStats: false,
+  followUpBehavior: 'queue',
   shareTimezone: false,
   mcp: []
 };
@@ -88,9 +89,9 @@ const settings = async () => {
 const chatPath = id => join(chats, id + '.json');
 const summary = ({ id, title, model, updated }) => ({ id, title, model, updated });
 
-function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, shareTimezone, toolDefaults, mcp }) {
+function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
   return {
-    endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true,
+    endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, followUpBehavior,
     shareTimezone: shareTimezone === true, webSearchByDefault: toolDefaults.includes('webSearch'),
     tools: availableTools.map(({ id, label, description, permissions }) => ({
       id, label, description, permissions, enabledByDefault: toolDefaults.includes(id)
@@ -308,7 +309,8 @@ async function generate(res, input) {
   if (active.has(chatId)) fail(409, 'A reply is already running for this conversation.');
   if (editing.has(chatId)) fail(409, 'This conversation is being updated.');
   const controller = new AbortController();
-  active.set(chatId, controller);
+  const replyId = randomUUID();
+  active.set(chatId, { controller, replyId });
   const sessions = [];
   const disconnected = () => controller.abort();
   res.on('close', disconnected);
@@ -345,7 +347,7 @@ async function generate(res, input) {
     history.updated = new Date().toISOString();
     await save(chatPath(chatId), history);
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'X-Accel-Buffering': 'no' });
-    emit('start', { chat: summary(history), tools: history.tools });
+    emit('start', { chat: summary(history), tools: history.tools, replyId });
     const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 12000);
     const deadline = AbortSignal.timeout(15 * 60 * 1000);
     const signal = AbortSignal.any([controller.signal, deadline]);
@@ -392,6 +394,7 @@ async function generate(res, input) {
       for (let round = 0; round < 6; round++) {
         const { content: answer, calls, usage, timings } = await completion(config, model, messages, round < 5 ? declarations : [], write, signal);
         recordUsage(reply, usage, timings);
+        signal.throwIfAborted();
         if (!calls.length) {
           if (!reply.content) fail(502, 'The model returned no answer.');
           delete reply.issue;
@@ -442,7 +445,7 @@ createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   try {
-    const { pathname } = new URL(req.url, 'http://localhost');
+    const { pathname, searchParams } = new URL(req.url, 'http://localhost');
     const method = req.method;
     const origin = req.headers.origin;
     if (origin && (!/^https?:\/\//.test(origin) || new URL(origin).host !== req.headers.host)) {
@@ -464,6 +467,8 @@ createServer(async (req, res) => {
       if (typeof shareTimezone !== 'boolean') fail(400, 'Invalid privacy setting.');
       const showInferenceStats = input.showInferenceStats ?? current.showInferenceStats;
       if (typeof showInferenceStats !== 'boolean') fail(400, 'Invalid inference statistics setting.');
+      const followUpBehavior = input.followUpBehavior ?? current.followUpBehavior;
+      if (!['queue', 'interrupt'].includes(followUpBehavior)) fail(400, 'Invalid follow-up behavior.');
       if (!Array.isArray(input.mcp) || input.mcp.length > 12) fail(400, 'Add up to 12 MCP connections.');
       const ids = new Set();
       const mcp = input.mcp.map(entry => {
@@ -484,7 +489,7 @@ createServer(async (req, res) => {
         endpoint === endpointUrl(current.endpoint) ? current.token : '';
       if (input.toolDefaults !== undefined && !validToolIds(input.toolDefaults)) fail(400, 'Invalid tool defaults.');
       const toolDefaults = selectedBuiltIns(input.toolDefaults, input.webSearchByDefault ?? undefined, current.toolDefaults);
-      const next = { endpoint, token, systemPrompt, showInferenceStats, shareTimezone, toolDefaults, mcp };
+      const next = { endpoint, token, systemPrompt, showInferenceStats, followUpBehavior, shareTimezone, toolDefaults, mcp };
       await save(configPath, next);
       return send(res, 200, publicSettings(next));
     }
@@ -534,7 +539,9 @@ createServer(async (req, res) => {
     if (match && uuid.test(match[1])) {
       const [, id, action] = match;
       if (action === 'stop' && method === 'POST') {
-        active.get(id)?.abort();
+        const run = active.get(id);
+        const replyId = searchParams.get('reply');
+        if (run && (replyId === null || replyId === run.replyId)) run.controller.abort();
         return send(res, 200, {});
       }
       if (!action && method === 'GET') {

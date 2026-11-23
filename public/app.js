@@ -4,10 +4,14 @@ import { sse } from './protocol.js';
 const $ = id => document.getElementById(id);
 const state = {
   chat: null, list: [], models: [], modelState: 'loading', settings: null,
-  attachments: [], busy: false, draftTools: null, savingTools: false, deleting: false
+  attachments: [], followUps: [], run: null, draftTools: null, savingTools: false, deleting: false
 };
 const ns = 'http://www.w3.org/2000/svg';
-const chatLocked = () => state.busy || state.savingTools || state.deleting;
+let followUpEdit = null;
+const requestLocked = () => Boolean(state.run || state.savingTools || state.deleting);
+const chatLocked = () => requestLocked() || Boolean(followUpEdit);
+const interruptOnEnter = () => state.settings?.followUpBehavior === 'interrupt';
+const hasDraft = () => Boolean($('prompt').value.trim() || state.attachments.length);
 const selectionModifier = event => event.metaKey || event.ctrlKey;
 const selectedChats = new Set();
 let selectionAnchor;
@@ -56,22 +60,22 @@ function status(message = '') {
 
 function renderControls() {
   const hasModel = state.modelState === 'online' && Boolean($('models').value);
-  $('send').disabled = state.busy ? !state.streamId || Boolean(state.stopping) :
-    chatLocked() || !hasModel || (!$('prompt').value.trim() && !state.attachments.length);
-  const label = state.busy ? 'Stop reply' : 'Send message';
+  $('send').disabled = !hasDraft() || (!followUpEdit && !state.run && (chatLocked() || !hasModel));
+  $('cancel-follow-up-edit').hidden = !followUpEdit;
+  const label = followUpEdit ? 'Save queued message' :
+    !state.run ? 'Send message' : interruptOnEnter() ? 'Interrupt and send' : 'Queue message';
   $('send').title = label;
   $('send').setAttribute('aria-label', label);
-  $('send').replaceChildren(icon(state.busy ? 'stop' : 'send'));
-  $('models').disabled = state.busy || state.modelState !== 'online';
+  $('stop-reply').hidden = !state.run;
+  $('stop-reply').disabled = Boolean(state.run?.stopRequested);
+  $('models').disabled = Boolean(state.run || followUpEdit) || state.modelState !== 'online';
   $('model-notice').hidden = !['offline', 'empty'].includes(state.modelState);
   $('history').querySelectorAll('.history-item button').forEach(button => {
     button.disabled = chatLocked();
   });
   $('delete-selected').disabled = chatLocked();
   $('new-chat').disabled = chatLocked();
-  $('attach').disabled = state.busy;
-  $('prompt').readOnly = state.busy;
-  $('tools-button').disabled = state.busy || !state.settings;
+  $('tools-button').disabled = Boolean(state.run || followUpEdit) || !state.settings;
   $('tool-options').disabled = chatLocked();
   $('thread').querySelectorAll('.reply-issue button').forEach(button => {
     button.disabled = !hasModel || chatLocked();
@@ -405,7 +409,10 @@ function makeMessage(message, options = {}) {
       if (options.canRetry) {
         const retry = element('button', '', 'Retry');
         retry.type = 'button';
-        retry.addEventListener('click', () => submit(true));
+        retry.addEventListener('click', () => {
+          const model = $('models').value;
+          if (!chatLocked() && state.modelState === 'online' && model) submit({ model }, true);
+        });
         issue.append(retry);
       }
     }
@@ -459,7 +466,6 @@ function renderAttachments() {
       tile.append(img);
     } else tile.append(element('span', 'file-name', attachment.name));
     const remove = iconButton('close', 'Remove ' + attachment.name);
-    remove.disabled = state.busy;
     remove.addEventListener('click', () => {
       state.attachments.splice(index, 1);
       renderAttachments();
@@ -470,13 +476,100 @@ function renderAttachments() {
   renderControls();
 }
 
+function renderFollowUps() {
+  const list = $('follow-ups');
+  const visible = state.followUps.filter(message => message !== followUpEdit?.message);
+  list.hidden = !visible.length;
+  list.replaceChildren(...visible.map((message, index) => {
+    const row = element('li');
+    const preview = [message.content, ...message.attachments.map(file => file.name)].filter(Boolean).join(' · ');
+    const previewNode = element('span', 'follow-up-preview', preview);
+    previewNode.id = 'follow-up-preview-' + index;
+    const interrupting = message.interrupt && state.run?.stopRequested;
+    row.append(
+      element('span', 'follow-up-state', interrupting ? 'Interrupting…' : 'Queued'),
+      previewNode
+    );
+    if (state.run && !interrupting) {
+      const interrupt = iconButton('send', 'Interrupt and send queued message');
+      interrupt.setAttribute('aria-describedby', previewNode.id);
+      interrupt.addEventListener('click', () => {
+        prioritizeFollowUp(message);
+        renderFollowUps();
+        $('prompt').focus();
+      });
+      row.append(interrupt);
+    }
+    if (!state.run && message === state.followUps[0]) {
+      const send = iconButton('send', 'Send queued message');
+      send.addEventListener('click', sendNext);
+      row.append(send);
+    }
+    const edit = iconButton('edit', 'Edit queued message');
+    edit.disabled = Boolean(followUpEdit);
+    edit.setAttribute('aria-describedby', previewNode.id);
+    edit.addEventListener('click', () => editFollowUp(message));
+    row.append(edit);
+    const remove = iconButton('close', 'Remove pending message');
+    remove.addEventListener('click', () => {
+      state.followUps.splice(state.followUps.indexOf(message), 1);
+      renderFollowUps();
+      $('prompt').focus();
+    });
+    row.append(remove);
+    return row;
+  }));
+}
+
+function editFollowUp(message) {
+  if (followUpEdit || state.deleting || state.savingTools) return;
+  navigation++;
+  const prompt = $('prompt');
+  followUpEdit = { message, draft: prompt.value, attachments: state.attachments, waiting: false };
+  draftVersion++;
+  prompt.value = message.content;
+  state.attachments = [...message.attachments];
+  setToolsOpen(false);
+  renderFollowUps();
+  renderAttachments();
+  prompt.focus();
+  prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+}
+
+function finishFollowUpEdit(save, interrupt = false) {
+  if (!followUpEdit) return;
+  const { message, draft, attachments, waiting } = followUpEdit;
+  const prompt = $('prompt');
+  if (save) {
+    message.content = prompt.value.trim();
+    message.attachments = state.attachments;
+  }
+  followUpEdit = null;
+  draftVersion++;
+  prompt.value = draft;
+  state.attachments = attachments;
+  if (interrupt) prioritizeFollowUp(message);
+  renderFollowUps();
+  renderAttachments();
+  if (waiting || interrupt) sendNext();
+  prompt.focus();
+}
+
 let navigation = 0;
-function resetDraft() {
+let draftVersion = 0;
+function clearDraft() {
+  draftVersion++;
+  $('prompt').value = '';
   state.attachments = [];
+}
+
+function resetDraft() {
+  clearDraft();
+  state.followUps = [];
+  renderFollowUps();
   state.draftTools = null;
   setToolsOpen(false);
   syncTools();
-  $('prompt').value = '';
   renderAttachments();
   status();
   hideMobileSidebar();
@@ -508,12 +601,52 @@ function newChat() {
   $('prompt').focus();
 }
 
-async function submit(retry = false) {
-  const model = $('models').value;
-  const content = $('prompt').value.trim();
-  const images = state.attachments.filter(item => item.url);
-  const files = state.attachments.filter(item => !item.url);
-  if (chatLocked() || state.modelState !== 'online' || !model || (!retry && !content && !state.attachments.length)) return;
+function submitDraft(interrupt) {
+  if (!hasDraft() || $('send').disabled) return;
+  if (followUpEdit) {
+    finishFollowUpEdit(true, interrupt);
+    return;
+  }
+  const message = {
+    model: state.run?.model || $('models').value,
+    content: $('prompt').value.trim(),
+    attachments: state.attachments
+  };
+  clearDraft();
+  if (state.run && interrupt) prioritizeFollowUp(message);
+  else state.followUps.push(message);
+  if (state.run) {
+    const stick = nearBottom();
+    renderFollowUps();
+    renderAttachments();
+    if (stick) scrollDown();
+  } else {
+    sendNext();
+  }
+}
+
+function prioritizeFollowUp(message) {
+  const queuedIndex = state.followUps.indexOf(message);
+  if (queuedIndex !== -1) state.followUps.splice(queuedIndex, 1);
+  message.interrupt = true;
+  const nextQueued = state.followUps.findIndex(next => !next.interrupt);
+  state.followUps.splice(nextQueued === -1 ? state.followUps.length : nextQueued, 0, message);
+  stopReply();
+}
+
+function sendNext() {
+  if (requestLocked() || !state.followUps.length) return;
+  if (state.followUps[0] === followUpEdit?.message) {
+    followUpEdit.waiting = true;
+    return;
+  }
+  submit(state.followUps.shift());
+}
+
+async function submit(message, retry = false) {
+  const { model, content = '', attachments = [] } = message;
+  const images = attachments.filter(item => item.url);
+  const files = attachments.filter(item => !item.url);
   const id = state.chat?.id;
   const reply = { role: 'assistant', model, content: '', reasoning: '' };
   const assistant = makeMessage(reply, { streaming: true, canRetry: true });
@@ -532,20 +665,19 @@ async function submit(retry = false) {
     });
   }
   const notices = new Set();
-  state.busy = true;
-  state.stopping = false;
-  state.streamId = null;
+  const run = state.run = { model, chatId: null, replyId: null, stopRequested: false };
   navigation++;
   setToolsOpen(false);
   status();
   renderHistory();
+  renderFollowUps();
   renderAttachments();
   try {
     const now = new Date();
     const localDateTime = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-') +
       ' ' + [now.getHours(), now.getMinutes()].map(value => String(value).padStart(2, '0')).join(':');
     const response = await request('chat', 'POST', {
-      id, model, content: retry ? '' : content, images: retry ? [] : images, files: retry ? [] : files, retry,
+      id, model, content, images, files, retry,
       localDateTime, ...(state.settings?.shareTimezone && { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       ...(!id && state.draftTools && { tools: state.draftTools })
     });
@@ -553,7 +685,9 @@ async function submit(retry = false) {
       const event = JSON.parse(frame);
       if (event.type === 'start') {
         started = true;
-        state.streamId = event.chat.id;
+        run.chatId = event.chat.id;
+        run.replyId = event.replyId;
+        if (run.stopRequested) stopStream(run);
         const messages = state.chat?.messages || [];
         if (retry) messages.pop();
         else messages.push({ role: 'user', content, images, files });
@@ -562,14 +696,12 @@ async function submit(retry = false) {
         syncTools();
         state.list = [event.chat, ...state.list.filter(chat => chat.id !== event.chat.id)];
         history.replaceState(null, '', '#' + state.chat.id);
-        if (!retry) {
-          $('prompt').value = '';
-          state.attachments = [];
-        }
-        renderAttachments();
         $('thread').hidden = false;
         if (retry) $('thread').lastElementChild?.remove();
-        else $('thread').append(makeMessage(messages.at(-2)).article);
+        else {
+          $('thread').lastElementChild?.querySelector('.reply-issue button')?.remove();
+          $('thread').append(makeMessage(messages.at(-2)).article);
+        }
         $('thread').append(assistant.article);
         renderStats();
         renderHistory();
@@ -592,29 +724,45 @@ async function submit(retry = false) {
     if (!finished) throw new Error('The connection closed before the reply finished.');
   } catch (error) {
     if (started) reply.issue = error.message;
-    else status(error.message);
+    else {
+      status(error.message);
+      if (!retry) {
+        if (hasDraft() || state.followUps.length) state.followUps.unshift(message);
+        else {
+          $('prompt').value = content;
+          state.attachments = attachments;
+        }
+      }
+    }
   } finally {
     if (updateFrame) cancelAnimationFrame(updateFrame);
     const stick = nearBottom();
     if (started) assistant.update(false);
     if (stick) scrollDown();
-    state.busy = false;
-    state.streamId = null;
-    state.stopping = false;
+    state.run = null;
     renderHistory();
+    renderFollowUps();
     renderAttachments();
+    if (finished) sendNext();
   }
 }
 
-async function stopReply() {
-  if (!state.streamId || state.stopping) return;
-  state.stopping = true;
+function stopReply() {
+  const run = state.run;
+  if (!run || run.stopRequested) return;
+  run.stopRequested = true;
   renderControls();
-  try { await api('chats/' + state.streamId + '/stop', 'POST'); }
+  if (run.chatId) stopStream(run);
+}
+
+async function stopStream(run) {
+  try { await api('chats/' + run.chatId + '/stop?reply=' + run.replyId, 'POST'); }
   catch (error) {
+    if (state.run !== run) return;
     status(error.message);
-    state.stopping = false;
+    run.stopRequested = false;
     renderControls();
+    renderFollowUps();
   }
 }
 
@@ -628,10 +776,9 @@ function readImage(file) {
 }
 
 async function attach(files) {
-  if (state.busy) return;
   const candidates = [...files];
   const slots = 4 - state.attachments.length;
-  const request = navigation;
+  const draft = draftVersion;
   try {
     const selected = candidates.slice(0, slots);
     const attachments = await Promise.all(selected.map(async file => {
@@ -644,7 +791,7 @@ async function attach(files) {
         return content.includes('\0') || content.length > 100000 ? null : { name: file.name, content };
       } catch { return null; }
     }));
-    if (request !== navigation || state.busy) return;
+    if (draft !== draftVersion) return;
     state.attachments.push(...attachments.filter(Boolean).slice(0, 4 - state.attachments.length));
     status(attachments.some(item => !item) || candidates.length > slots ?
       'Attach up to four images (5 MB each) or UTF-8 text files (128 KB each).' : '');
@@ -730,6 +877,7 @@ async function openSettings() {
     $('api-key').placeholder = config.hasToken ? 'Saved' : 'Optional';
     $('system-prompt').value = config.systemPrompt;
     $('show-inference-stats').checked = config.showInferenceStats;
+    $('follow-up-behavior').value = config.followUpBehavior;
     $('share-timezone').checked = config.shareTimezone;
     $('tool-defaults').replaceChildren(...config.tools.map(({ id, label, description, permissions, enabledByDefault }) => {
       const { row, input } = toggleRow('', enabledByDefault);
@@ -772,6 +920,7 @@ $('settings-form').addEventListener('submit', async event => {
       ...(token && { token }),
       systemPrompt: $('system-prompt').value,
       showInferenceStats: $('show-inference-stats').checked,
+      followUpBehavior: $('follow-up-behavior').value,
       shareTimezone: $('share-timezone').checked,
       toolDefaults: Array.from($('tool-defaults').querySelectorAll('input:checked'), input => input.value),
       mcp: [...connectionFields.values()].map(({ id, name, url, key, defaultToggle }) => ({
@@ -865,7 +1014,8 @@ $('sidebar').addEventListener('keydown', event => {
   event.preventDefault();
 });
 document.addEventListener('keydown', event => {
-  if (event.defaultPrevented || event.key !== 'Escape' || confirmDelete.open || $('history').querySelector('.history-menu:popover-open')) return;
+  if (event.defaultPrevented || event.key !== 'Escape' || confirmDelete.open ||
+      $('history').querySelector('.history-menu:popover-open')) return;
   if (!$('tools-panel').hidden) {
     setToolsOpen(false);
     $('tools-button').focus();
@@ -941,23 +1091,32 @@ $('prompt').addEventListener('paste', event => {
     attach(images);
   }
 });
+const touchKeyboard = matchMedia('(pointer: coarse)');
 $('prompt').addEventListener('keydown', event => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !mobile.matches) {
+  if (event.key === 'Escape' && !event.isComposing && followUpEdit) {
     event.preventDefault();
-    if (!state.busy) submit();
+    finishFollowUpEdit(false);
+    return;
+  }
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing &&
+      (followUpEdit || event.ctrlKey || !touchKeyboard.matches)) {
+    event.preventDefault();
+    if (!event.repeat) submitDraft(interruptOnEnter() !== event.ctrlKey);
   }
 });
 $('composer').addEventListener('submit', event => {
   event.preventDefault();
-  if (state.busy) stopReply();
-  else submit();
+  $('prompt').focus();
+  submitDraft(!followUpEdit && interruptOnEnter());
 });
+$('stop-reply').addEventListener('click', stopReply);
+$('cancel-follow-up-edit').addEventListener('click', () => finishFollowUpEdit(false));
 
 let dragDepth = 0;
 document.addEventListener('dragenter', event => {
   if (!event.dataTransfer.types.includes('Files')) return;
   dragDepth++;
-  if (!state.busy && !settingsDialog.open && !confirmDelete.open) $('drop-layer').hidden = false;
+  if (!settingsDialog.open && !confirmDelete.open) $('drop-layer').hidden = false;
 });
 document.addEventListener('dragover', event => {
   if (event.dataTransfer.types.includes('Files')) event.preventDefault();
@@ -981,5 +1140,5 @@ api('chats').then(list => {
   state.list = list;
   renderHistory();
   const id = location.hash.slice(1);
-  if (list.some(chat => chat.id === id) && !state.chat && !state.busy && navigation === 0) openChat(id);
+  if (list.some(chat => chat.id === id) && !state.chat && !state.run && navigation === 0) openChat(id);
 }).catch(error => status(error.message));

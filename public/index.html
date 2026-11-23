@@ -43,6 +43,7 @@
     <div class="dock">
       <div class="model-notice" id="model-notice" hidden><span id="model-error"></span><button type="button" id="retry-models">Retry</button><button type="button" data-open-settings>Settings</button></div>
       <div class="status" id="status" role="status" hidden></div>
+      <ul class="follow-ups" id="follow-ups" aria-label="Pending messages" hidden></ul>
       <form class="composer" id="composer">
         <div id="attachments" class="attachments" hidden></div>
         <textarea id="prompt" aria-label="Message" placeholder="Message…" rows="1" maxlength="100000"></textarea>
@@ -62,6 +63,8 @@
               <select id="models" aria-label="Model"><option value="">Checking models…</option></select>
               <svg class="chevron" aria-hidden="true"><use href="/icons.svg#chevron"/></svg>
             </label>
+            <button type="button" class="icon stop-reply" id="stop-reply" title="Stop reply" aria-label="Stop reply" hidden><svg><use href="/icons.svg#stop"/></svg></button>
+            <button type="button" class="icon" id="cancel-follow-up-edit" title="Cancel edit" aria-label="Cancel edit" hidden><svg aria-hidden="true"><use href="/icons.svg#close"/></svg></button>
             <button type="submit" class="send" id="send" title="Send message" aria-label="Send message"><svg><use href="/icons.svg#send"/></svg></button>
           </div>
         </div>
@@ -90,6 +93,14 @@
         </section>
         <section class="settings-section">
           <label>System prompt<textarea id="system-prompt" rows="4" maxlength="100000"></textarea></label>
+        </section>
+        <section class="settings-section">
+          <label>Follow-up behavior
+            <select id="follow-up-behavior">
+              <option value="queue">Enter queues, Ctrl+Enter interrupts</option>
+              <option value="interrupt">Enter interrupts, Ctrl+Enter queues</option>
+            </select>
+          </label>
         </section>
         <section class="settings-section">
           <h3>Privacy</h3>
