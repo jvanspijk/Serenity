@@ -59,6 +59,8 @@ node --test
 
 Chats and settings are stored in the Docker volume, or in `./data` when running from source. Settings can include API keys and MCP tokens; protect the data and its backups. Serenity has no authentication, so keep it on localhost or behind an authenticated reverse proxy.
 
-Attachments use a temporary workspace for each conversation. The workspace holds up to 250 MiB, including compressed WebP images, PDF pages, and MP3 audio. Each audio upload becomes a directory of numbered MP3 chunks up to 28 seconds long. Deleting a conversation removes its workspace. Temp cleanup or container replacement can remove attachments from an otherwise preserved transcript. Model requests include local file links. Opening those links requires a separate file reader.
+Attachments use a temporary workspace for each conversation. The workspace holds up to 250 MiB, including compressed WebP images, PDF pages, MP3 audio, and media tool copies. Each audio upload becomes a directory of numbered MP3 chunks up to 28 seconds long. Deleting a conversation removes its workspace. Temp cleanup or container replacement can remove attachments from an otherwise preserved transcript.
+
+Enable **Image tools** or **Audio tools** in the composer’s tool menu, or set their defaults in **Settings**. Image tools crop, zoom, and rotate. Audio tools trim, stretch, and clean up a recording chunk. Each edit returns the workspace path of a new copy. The `read_file` tool is always available for workspace text, images, and audio, including edited copies. Reading images or audio requires a model and endpoint that support that input alongside tool calls.
 
 Place trusted plugin folders in `plugins/` and restart the app. See the [plugin guide](docs/plugins.md) and [example plugin](examples/word-count/). Web tools and MCP connections are configured in the app and require a model that supports tool calls.

@@ -7,7 +7,7 @@ import { uploadError } from './multipart.js';
 const run = promisify(execFile);
 const sharedExtension = /\.(ogg|webm)$/i;
 const audioExtension = /\.(aac|aif[fc]?|flac|m4[ab]|mka|mp3|oga|opus|wav|wave|weba|wma)$/i;
-const inputOptions = [
+export const audioInputOptions = [
   '-protocol_whitelist', 'file',
   '-format_whitelist', 'aac,aiff,asf,flac,matroska,webm,mov,mp3,ogg,wav'
 ];
@@ -24,7 +24,7 @@ export async function convertAudio(source, output, scratch, name, charge, upload
   const options = { signal, windowsHide: true, timeout: 60_000 };
   try {
     const { stdout } = await run('ffprobe', [
-      '-v', 'error', ...inputOptions,
+      '-v', 'error', ...audioInputOptions,
       '-show_entries', 'stream=codec_type,channels:stream_disposition=attached_pic', '-of', 'json', source
     ], options);
     const { streams } = JSON.parse(stdout);
@@ -39,7 +39,7 @@ export async function convertAudio(source, output, scratch, name, charge, upload
     await mkdir(output);
     signal.throwIfAborted();
     const decoder = spawn('ffmpeg', [
-      '-v', 'error', '-nostdin', '-xerror', ...inputOptions, '-i', source,
+      '-v', 'error', '-nostdin', '-xerror', ...audioInputOptions, '-i', source,
       '-map', '0:a:0', '-ac', String(channels), '-ar', String(sampleRate), '-f', 's16le', 'pipe:1'
     ], { signal, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     let decoderError;

@@ -5,9 +5,13 @@ import { join, resolve } from 'node:path';
 import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
+import { readFileTool } from './tools/read-file.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
-import { attachmentMarkdown, attachmentPresentation, attachmentPreview, deleteWorkspace, withWorkspace } from './workspace.js';
+import {
+  attachmentMarkdown, attachmentPresentation, attachmentPreview, deleteWorkspace, withWorkspace,
+  workspaceMedia, WorkspaceMediaError
+} from './workspace.js';
 
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 8080);
@@ -375,6 +379,8 @@ async function generate(res, input, receive = async () => {}) {
     try {
       const enabled = availableTools.filter(({ id }) => history.tools.builtIn.includes(id));
       const tools = new Map(enabled.flatMap(group => group.tools.map(tool => [tool.name, tool])));
+      tools.set(readFileTool.name, readFileTool);
+      const media = workspaceMedia(chatId, history.messages.flatMap(message => message.attachments || []), signal);
       const servers = config.mcp.filter(server => history.tools.mcp.includes(server.id));
       await Promise.all(servers.map(async server => {
         try {
@@ -418,6 +424,7 @@ async function generate(res, input, receive = async () => {}) {
         }
         if (round === 5) fail(502, 'The model exceeded the tool call limit.');
         messages.push({ role: 'assistant', content: answer || null, tool_calls: calls });
+        const mediaParts = [];
         for (const call of calls) {
           signal.throwIfAborted();
           const entry = tools.get(call.function.name);
@@ -427,16 +434,25 @@ async function generate(res, input, receive = async () => {}) {
               const args = JSON.parse(call.function.arguments || '{}');
               if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid arguments');
               emit('tool', { text: entry.label });
-              result = await entry.run(args, signal);
-            } catch {
+              const output = await entry.run(args, signal, media);
+              if (entry.supportsMedia) {
+                result = output.result;
+                if (output.contentPart) {
+                  mediaParts.push({ type: 'text', text: 'Media from tool call ' + call.id + '.' }, output.contentPart);
+                }
+              } else result = output;
+            } catch (error) {
               signal.throwIfAborted();
-              const message = entry.label + ' could not run. Continuing without its results.';
+              const message = error instanceof WorkspaceMediaError ? error.message :
+                entry.label + ' could not run. Continuing without its results.';
               result = { isError: true, content: [{ type: 'text', text: message }] };
               emit('notice', { text: message });
             }
           }
           messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
         }
+        // Chat Completions accepts image and audio parts in user messages, after all tool replies.
+        if (mediaParts.length) messages.push({ role: 'user', content: mediaParts });
       }
     } catch (error) {
       reply.issue = controller.signal.aborted ? 'Reply stopped.' : deadline.aborted ? 'The model took too long to respond.' :

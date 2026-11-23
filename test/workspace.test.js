@@ -80,18 +80,24 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const data = await mkdtemp(join(tmpdir(), 'serenity-workspace-test-'));
   const root = join(data, 'workspaces');
   const prompts = [];
+  const toolRounds = [];
+  let declarations;
   let interruptNext = false;
   const model = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
-    prompts.push(JSON.parse(Buffer.concat(chunks)).messages);
+    const { messages, tools } = JSON.parse(Buffer.concat(chunks));
+    prompts.push(messages);
     if (interruptNext) {
       interruptNext = false;
       res.writeHead(502).end();
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-    res.end('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    const next = toolRounds.shift();
+    if (next) declarations = tools;
+    const delta = next ? { tool_calls: next(messages) } : { content: 'OK' };
+    res.end('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: next ? 'tool_calls' : 'stop' }] }) + '\n\ndata: [DONE]\n\n');
   });
   await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => model.close(resolve)));
@@ -141,7 +147,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     .withMetadata({ orientation: 6 }).jpeg().toBuffer();
   const binary = Buffer.from([0, 255, 23, 10]);
   const attachments = [['Photo.jpg', photo], ['Data?.bin', binary], ['data?.BIN', binary],
-    ['Note.txt', 'Attachment bytes must never reach inference'], ['archive.zip', binary], ['last.bin', binary]];
+    ['Note.txt', 'Attachment bytes must never reach inference\nSecond line'], ['archive.zip', binary], ['last.bin', binary]];
   const upload = await start(await send({ id: first, content: 'Visible message' }, attachments));
   assert.equal(upload.attachments.length, 6);
   assert.deepEqual(await readFile(join(files, 'Data-.bin')), binary);
@@ -319,6 +325,98 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   assert.equal(tooLarge.status, 413);
   assert.equal((await tooLarge.json()).error, quotaError);
   assert.deepEqual((await readdir(files)).sort(), before);
+
+  const tools = (await (await api('settings')).json()).tools;
+  for (const id of ['workspaceImage', 'workspaceAudio']) {
+    assert.equal(tools.find(tool => tool.id === id)?.enabledByDefault, false);
+  }
+  const mediaSelection = await api('chats/' + first + '/tools', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ builtIn: ['workspaceImage', ...(hasAudio ? ['workspaceAudio'] : [])], mcp: [] })
+  });
+  assert.equal(mediaSelection.status, 200);
+  const call = (name, args, id = name) => ({ id, function: { name, arguments: JSON.stringify(args) } });
+  const result = (messages, name) => JSON.parse(messages.findLast(message => message.tool_call_id === name).content);
+  const photoPath = /<(file:[^>]+)>/.exec(userPrompt)[1];
+  const audioPrompt = prompts.find(messages => messages.at(-1).content?.includes('[Long recording.WAV]'));
+  const audioPath = audioPrompt && /<(file:[^>]+)>/.exec(audioPrompt.at(-1).content)[1];
+  const originalImage = await readFile(join(files, 'Photo.webp'));
+  const originalAudio = hasAudio && await readFile(join(files, 'Long recording', '000002.mp3'));
+  toolRounds.push(
+    () => [call('image_crop', { path: photoPath, x: 20, y: 10, width: 100, height: 80 }), ...(hasAudio ? [
+      call('audio_transform', { path: audioPath, chunk: 2, start: 0.1, end: 1.1, speed: 0.5, focusSpeech: true, normalize: true })
+    ] : [])],
+    messages => [call('image_rotate', { path: result(messages, 'image_crop').path, degrees: 90 })],
+    messages => [call('read_file', { file_path: result(messages, 'image_rotate').path }, 'read_image'), ...(hasAudio ? [
+      call('read_file', { file_path: result(messages, 'audio_transform').path }, 'read_audio')
+    ] : [])]
+  );
+  await start(await send({ id: first, content: 'Inspect edited media' }));
+  const inspected = prompts.at(-1);
+  assert.equal(declarations.filter(tool => tool.function.name === 'read_file').length, 1);
+  assert.ok(declarations.some(tool => tool.function.name === 'image_rotate'));
+  assert.equal(declarations.some(tool => tool.function.name === 'audio_transform'), hasAudio);
+  assert.ok(prompts.slice(-4, -1).every(messages => messages.every(message => !Array.isArray(message.content))));
+  const multimodal = inspected.at(-1);
+  assert.equal(multimodal.role, 'user');
+  assert.equal(inspected.at(-2).role, 'tool');
+  const rotated = result(inspected, 'read_image');
+  assert.deepEqual([rotated.width, rotated.height], [160, 200]);
+  const imagePart = multimodal.content.find(part => part.type === 'image_url');
+  assert.match(imagePart.image_url.url, /^data:image\/webp;base64,/);
+  assert.deepEqual(Buffer.from(imagePart.image_url.url.split(',')[1], 'base64'),
+    await readFile(join(workspace, rotated.path.slice(1))));
+  assert.deepEqual(await readFile(join(files, 'Photo.webp')), originalImage);
+  if (hasAudio) {
+    const edited = result(inspected, 'read_audio');
+    assert.ok(Math.abs(edited.seconds - 2) < 0.1);
+    const { input_audio: clip } = multimodal.content.find(part => part.type === 'input_audio');
+    assert.equal(clip.format, 'wav');
+    assert.deepEqual(Buffer.from(clip.data, 'base64'), await readFile(join(workspace, edited.path.slice(1))));
+    assert.deepEqual(await readFile(join(files, 'Long recording', '000002.mp3')), originalAudio);
+
+    toolRounds.push(() => [call('audio_transform', { path: audioPath, speed: 0.5 })]);
+    await start(await send({ id: first, content: 'Try stretching the first chunk' }));
+    assert.match(result(prompts.at(-1), 'audio_transform').content[0].text, /exceed 28 seconds/);
+  }
+  const disabled = await api('chats/' + first + '/tools', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ builtIn: [], mcp: [] })
+  });
+  assert.equal(disabled.status, 200);
+  toolRounds.push(
+    () => [
+      call('read_file', { file_path: '/files/Note.txt', start_line: 2, end_line: 2 }, 'read_text'),
+      call('read_file', { file_path: '/files/Data-.bin' }, 'read_binary'),
+      call('read_file', { file_path: '/files/Paged.txt' }, 'read_page')
+    ],
+    messages => [
+      call('read_file', { file_path: '/files/Paged.txt', start_line: result(messages, 'read_page').next_line }, 'read_next_page'),
+      call('read_file', { file_path: rotated.path }, 'read_image'),
+      ...(hasAudio ? [call('read_file', { file_path: audioPath, chunk: 2 }, 'read_audio')] : [])
+    ]
+  );
+  const paged = ['x'.repeat(2001), ...Array.from({ length: 204 }, (_, i) => 'Line ' + (i + 2))];
+  await start(await send({ id: first, content: 'Read files with editing disabled' }, [['Paged.txt', paged.join('\r\n')]]));
+  const checked = prompts.at(-1);
+  assert.deepEqual(declarations.map(tool => tool.function.name), ['read_file']);
+  assert.equal(result(checked, 'read_image').width, 160);
+  assert.equal(result(checked, 'read_text').content, 'Second line');
+  assert.equal(result(checked, 'read_binary').isError, true);
+  const firstPage = result(checked, 'read_page');
+  assert.equal(firstPage.next_line, 201);
+  assert.deepEqual(firstPage.truncated_lines, [1]);
+  assert.equal(firstPage.content.split('\n')[0].length, 2000);
+  assert.equal(result(checked, 'read_next_page').content, paged.slice(200).join('\n'));
+  if (hasAudio) {
+    assert.equal(result(checked, 'read_audio').chunks, 2);
+    const { input_audio: original } = checked.at(-1).content.find(part => part.type === 'input_audio');
+    assert.equal(original.format, 'mp3');
+    assert.deepEqual(Buffer.from(original.data, 'base64'), originalAudio);
+  }
+  toolRounds.push(() => [call('read_file', { file_path: rotated.path })]);
+  const isolated = await start(await send({ content: 'Check another workspace', tools: { builtIn: [], mcp: [] } }));
+  assert.equal(result(prompts.at(-1), 'read_file').isError, true);
+  assert.equal((await api('chats/' + isolated.chat.id, { method: 'DELETE' })).status, 200);
 
   await rm(workspace, { force: true, recursive: true });
   assert.equal((await fetch(photoURL)).status, 404);

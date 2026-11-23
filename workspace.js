@@ -212,6 +212,77 @@ export async function deleteWorkspace(id) {
   if (await checkDirectory(root)) await rm(workspacePath(id), { recursive: true, force: true, maxRetries: 3 });
 }
 
+export class WorkspaceMediaError extends Error {}
+
+export function workspaceMedia(chatId, attachments, signal) {
+  const workspace = workspacePath(chatId);
+  const directory = join(workspace, 'media');
+  const sources = new Map();
+  for (const attachment of attachments) {
+    if (!['image', 'audio', 'file'].includes(attachment.kind)) continue;
+    const path = join(workspace, 'files', attachment.entry);
+    const url = pathToFileURL(attachment.kind === 'audio' ? join(path, '/') : path).href;
+    sources.set(url, attachment);
+    sources.set('/files/' + attachment.entry, attachment);
+  }
+  return {
+    async input(reference, { kind: expectedKind, chunk } = {}) {
+      signal.throwIfAborted();
+      const attachment = sources.get(reference);
+      const copy = typeof reference === 'string' ? /^\/media\/([a-f0-9-]{36})\.(webp|wav)$/.exec(reference) : null;
+      const kind = attachment?.kind ?? (copy && (copy[2] === 'webp' ? 'image' : 'audio'));
+      if (kind && (!expectedKind || kind === expectedKind) && await checkDirectory(workspace)) {
+        if (chunk !== undefined && (kind !== 'audio' || !Number.isSafeInteger(chunk) || chunk < 1)) {
+          throw new WorkspaceMediaError('Use a positive chunk number for audio recordings.');
+        }
+        const selectedChunk = chunk ?? 1;
+        if (attachment && await checkDirectory(join(workspace, 'files'))) {
+          const path = await attachmentPath(chatId, attachment);
+          if (path && kind !== 'audio') return { path, kind };
+          if (path) {
+            const chunks = (await readdir(path, { withFileTypes: true }))
+              .filter(entry => entry.isFile() && /^\d{6}\.mp3$/.test(entry.name)).length;
+            const selected = join(path, String(selectedChunk).padStart(6, '0') + '.mp3');
+            if (selectedChunk <= chunks && (await entryStat(selected))?.isFile()) {
+              return { path: selected, kind, format: 'mp3', chunk: selectedChunk, chunks };
+            }
+            throw new WorkspaceMediaError('The recording has ' + chunks + ' available audio chunks.');
+          }
+        }
+        if (copy && await checkDirectory(directory)) {
+          const [, name, format] = copy;
+          const path = join(directory, name + '.' + format);
+          if ((await entryStat(path))?.isFile()) {
+            if (selectedChunk !== 1) throw new WorkspaceMediaError('An audio copy has one chunk.');
+            return { path, kind, format };
+          }
+        }
+      }
+      throw new WorkspaceMediaError('That ' + (expectedKind || 'file') + ' is unavailable. Use an attachment link from this conversation or a workspace copy path returned by a tool.');
+    },
+    async copy(extension, write) {
+      signal.throwIfAborted();
+      const staging = await mkdtemp(join(root, '.media-'));
+      const name = randomUUID() + '.' + extension;
+      const staged = join(staging, name);
+      try {
+        const details = await write(staged);
+        if (await storedSize(workspace) + (await lstat(staged)).size > workspaceLimit) {
+          throw new WorkspaceMediaError('The conversation workspace is full.');
+        }
+        signal.throwIfAborted();
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await checkDirectory(directory);
+        signal.throwIfAborted();
+        await rename(staged, join(directory, name));
+        return { path: '/media/' + name, ...details };
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
+    }
+  };
+}
+
 async function attachmentPath(chatId, attachment) {
   if (/[\\/]/.test(attachment.entry) || !attachment.entry || /^\.+$/.test(attachment.entry)) return null;
   const path = join(workspacePath(chatId), 'files', attachment.entry);
