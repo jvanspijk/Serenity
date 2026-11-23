@@ -1,11 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-color-palette="nordic">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#272D2D">
+  <meta name="theme-color" content="#2b303a">
   <title>Serenity</title>
   <link rel="stylesheet" href="/style.css">
+  <!-- Palette stylesheets -->
   <script type="module" src="/app.js"></script>
 </head>
 <body>
@@ -88,6 +89,11 @@
       </div>
       <div class="settings-body">
         <section class="settings-section">
+          <label>Color palette
+            <select id="color-palette">
+              <!-- Palette options -->
+            </select>
+          </label>
           <label>Chat text size
             <select id="chat-text-size">
               <option value="small">Small</option>

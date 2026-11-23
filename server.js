@@ -24,12 +24,19 @@ Serenity focuses only on essentials, minimizing mental effort for the agent and 
 - If an intermediary step fails or provides minimal data, alter strategy instead of repeating the same action.
 - Only report that something cannot be fulfilled after all reasonable and viable attempts have been exhausted.`;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const paletteDirectory = new URL('./public/palettes/', import.meta.url);
+const paletteLabels = { 'e-ink': 'e-ink (light)', 'e-ink-dark': 'e-ink (dark)' };
+const colorPalettes = new Set((await readdir(paletteDirectory, { withFileTypes: true }))
+  .filter(file => file.isFile() && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*\.css$/.test(file.name))
+  .map(file => file.name.slice(0, -4))
+  .sort());
 const defaults = {
   endpoint: process.env.INFERENCE_URL || 'http://127.0.0.1:11434/v1',
   token: process.env.INFERENCE_API_KEY || '',
   systemPrompt: '',
   showInferenceStats: false,
   chatTextSize: 'medium',
+  colorPalette: 'nordic',
   followUpBehavior: 'queue',
   shareTimezone: false,
   mcp: []
@@ -48,13 +55,24 @@ const availableTools = [
   }))
 ];
 
+const paletteNames = [defaults.colorPalette, ...[...colorPalettes].filter(name => name !== defaults.colorPalette)];
+const paletteLinks = [...colorPalettes].map(name => `<link rel="stylesheet" href="/palettes/${name}.css">`);
+const paletteOptions = paletteNames.filter(name => colorPalettes.has(name)).map(name => {
+  const label = Object.hasOwn(paletteLabels, name) ? paletteLabels[name] :
+    name.split('-').map(word => word[0].toUpperCase() + word.slice(1)).join(' ');
+  return `<option value="${name}">${label}</option>`;
+});
+const index = (await readFile(new URL('./public/index.html', import.meta.url), 'utf8'))
+  .replace('<!-- Palette stylesheets -->', paletteLinks.join('\n  '))
+  .replace('<!-- Palette options -->', paletteOptions.join('\n              '));
 const staticFiles = new Map(await Promise.all([
-  ['/', 'index.html', 'text/html'],
   ['/style.css', 'style.css', 'text/css'],
+  ...[...colorPalettes].map(name => ['/palettes/' + name + '.css', 'palettes/' + name + '.css', 'text/css']),
   ['/app.js', 'app.js', 'text/javascript'],
   ['/markdown.js', 'markdown.js', 'text/javascript'],
   ['/icons.svg', 'icons.svg', 'image/svg+xml']
 ].map(async ([url, file, type]) => [url, [type, await readFile(new URL('./public/' + file, import.meta.url))]])));
+staticFiles.set('/', ['text/html', index]);
 staticFiles.set('/markdown-it.mjs', ['text/javascript',
   await readFile(new URL(import.meta.resolve('markdown-it/browser')))]);
 staticFiles.set('/protocol.js', ['text/javascript', await readFile(new URL('./protocol.js', import.meta.url))]);
@@ -84,15 +102,16 @@ async function save(path, value) {
 
 const settings = async () => {
   const config = { ...defaults, ...await load(configPath) };
+  if (!colorPalettes.has(config.colorPalette)) config.colorPalette = defaults.colorPalette;
   config.toolDefaults = selectedBuiltIns(config.toolDefaults, config.webSearchByDefault);
   return config;
 };
 const chatPath = id => join(chats, id + '.json');
 const summary = ({ id, title, model, updated }) => ({ id, title, model, updated });
 
-function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, chatTextSize, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
+function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
   return {
-    endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, chatTextSize, followUpBehavior,
+    endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, chatTextSize, colorPalette, followUpBehavior,
     shareTimezone: shareTimezone === true, webSearchByDefault: toolDefaults.includes('webSearch'),
     tools: availableTools.map(({ id, label, description, permissions }) => ({
       id, label, description, permissions, enabledByDefault: toolDefaults.includes(id)
@@ -470,6 +489,8 @@ createServer(async (req, res) => {
       if (typeof showInferenceStats !== 'boolean') fail(400, 'Invalid inference statistics setting.');
       const chatTextSize = input.chatTextSize ?? current.chatTextSize;
       if (!['small', 'medium', 'large'].includes(chatTextSize)) fail(400, 'Invalid chat text size.');
+      const colorPalette = input.colorPalette ?? current.colorPalette;
+      if (!colorPalettes.has(colorPalette)) fail(400, 'Invalid color palette.');
       const followUpBehavior = input.followUpBehavior ?? current.followUpBehavior;
       if (!['queue', 'interrupt'].includes(followUpBehavior)) fail(400, 'Invalid follow-up behavior.');
       if (!Array.isArray(input.mcp) || input.mcp.length > 12) fail(400, 'Add up to 12 MCP connections.');
@@ -492,7 +513,7 @@ createServer(async (req, res) => {
         endpoint === endpointUrl(current.endpoint) ? current.token : '';
       if (input.toolDefaults !== undefined && !validToolIds(input.toolDefaults)) fail(400, 'Invalid tool defaults.');
       const toolDefaults = selectedBuiltIns(input.toolDefaults, input.webSearchByDefault ?? undefined, current.toolDefaults);
-      const next = { endpoint, token, systemPrompt, showInferenceStats, chatTextSize, followUpBehavior, shareTimezone, toolDefaults, mcp };
+      const next = { endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolDefaults, mcp };
       await save(configPath, next);
       return send(res, 200, publicSettings(next));
     }

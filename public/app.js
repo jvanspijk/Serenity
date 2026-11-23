@@ -882,7 +882,10 @@ async function checkMcp() {
 
 function applySettings(config) {
   state.settings = config;
-  document.documentElement.dataset.chatTextSize = config.chatTextSize;
+  const root = document.documentElement;
+  root.dataset.chatTextSize = config.chatTextSize;
+  root.dataset.colorPalette = config.colorPalette;
+  document.querySelector('meta[name="theme-color"]').content = getComputedStyle(root).getPropertyValue('--surface-subtle').trim();
 }
 
 async function openSettings() {
@@ -899,6 +902,7 @@ async function openSettings() {
     $('system-prompt').value = config.systemPrompt;
     $('show-inference-stats').checked = config.showInferenceStats;
     $('chat-text-size').value = config.chatTextSize;
+    $('color-palette').value = config.colorPalette;
     $('follow-up-behavior').value = config.followUpBehavior;
     $('share-timezone').checked = config.shareTimezone;
     $('tool-defaults').replaceChildren(...config.tools.map(({ id, label, description, permissions, enabledByDefault }) => {
@@ -943,6 +947,7 @@ $('settings-form').addEventListener('submit', async event => {
       systemPrompt: $('system-prompt').value,
       showInferenceStats: $('show-inference-stats').checked,
       chatTextSize: $('chat-text-size').value,
+      colorPalette: $('color-palette').value,
       followUpBehavior: $('follow-up-behavior').value,
       shareTimezone: $('share-timezone').checked,
       toolDefaults: Array.from($('tool-defaults').querySelectorAll('input:checked'), input => input.value),

@@ -1,0 +1,23 @@
+:root[data-color-palette="e-ink-dark"] {
+  --surface-subtle: #050505;
+  --canvas: #0a0a0a;
+  --sidebar: #161616;
+  --panel: #000;
+  --hover: #1f1f1f;
+  --line: #3a3a3a;
+  --sidebar-line: #3a3a3a;
+  --footer-line: #3a3a3a;
+  --dialog-line: #7a7a7a;
+  --text: #e4e4e4;
+  --muted: #b7b7b7;
+  --dim: #a6a6a6;
+  --control-line: #8a8a8a;
+  --warn: #c7c7c7;
+  --warn-hover: #e7e7e7;
+  --on-warn: #000;
+  --accent: #d6d6d6;
+  --highlight: #bababa;
+  --user-message-surface: #171717;
+  --backdrop: #ebebeb80;
+  --menu-shadow: #ebebeb40;
+}
