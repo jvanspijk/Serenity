@@ -187,6 +187,7 @@ async function refreshModels() {
     $('model-error').textContent = 'No models reported by the inference server.';
   } catch (error) {
     if (request !== modelRequest) return;
+    if (state.modelState === 'online') return;
     state.modelState = 'offline';
     $('model-error').textContent = error.message;
   } finally {
