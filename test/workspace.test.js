@@ -34,6 +34,40 @@ function samplePDF() {
     'trailer\n<< /Root 1 0 R /Size ' + offsets.length + ' >>\nstartxref\n' + file.length + '\n%%EOF\n';
 }
 
+function sampleWave(seconds, channels = 1) {
+  const rate = 48_000;
+  const frames = rate * seconds;
+  const samples = Buffer.alloc(frames * channels * 2);
+  for (let frame = 0; frame < frames; frame++) {
+    const frequency = frame < rate * 27.9 ? 800 : 400;
+    const value = Math.round(8000 * Math.sin(2 * Math.PI * frequency * frame / rate));
+    for (let channel = 0; channel < channels; channel++) {
+      samples.writeInt16LE(value, (frame * channels + channel) * 2);
+    }
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF');
+  header.writeUInt32LE(36 + samples.length, 4);
+  header.write('WAVEfmt ', 8);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * channels * 2, 28);
+  header.writeUInt16LE(channels * 2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(samples.length, 40);
+  return Buffer.concat([header, samples]);
+}
+
+function media(command, args, input) {
+  const result = spawnSync(command, args, { input, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr.toString());
+  return result.stdout;
+}
+
 async function eventually(check) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (await check()) return;
@@ -86,7 +120,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     if (!files.length) return api('chat', { method: 'POST', body: message, headers: { 'Content-Type': 'application/json' } });
     const body = new FormData();
     body.append('message', message);
-    for (const [name, contents] of files) body.append('files', new Blob([contents]), name);
+    for (const [name, contents, type] of files) body.append('files', new Blob([contents], { type }), name);
     return api('chat', { method: 'POST', body });
   }
   async function start(response) {
@@ -149,15 +183,83 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     before = (await readdir(files)).sort();
   } else t.diagnostic('Poppler unavailable. PDF assertions skipped.');
 
+  const audio = sampleWave(29.25, 2);
+  const hasAudio = ['ffmpeg', 'ffprobe', 'lame'].every(command =>
+    !spawnSync(command, ['-version'], { windowsHide: true }).error);
+  if (hasAudio) {
+    const longAudio = await start(await send({ id: first }, [['Long recording.WAV', audio]]));
+    assert.equal(longAudio.attachments[0].kind, 'audio');
+    assert.equal(longAudio.attachments[0].available, true);
+    assert.match(prompts.at(-1).at(-1).content, /\[Long recording\.WAV\]\(<file:\/\/\/.+\/files\/Long%20recording\/>\)/);
+    const directory = join(files, 'Long recording');
+    const chunks = (await readdir(directory)).sort();
+    assert.deepEqual(chunks, ['000001.mp3', '000002.mp3']);
+    let samples = 0;
+    for (const [index, chunk] of chunks.entries()) {
+      const path = join(directory, chunk);
+      const details = JSON.parse(media('ffprobe', [
+        '-v', 'error', '-show_entries', 'format=duration:stream=codec_name,channels', '-of', 'json', path
+      ]));
+      assert.equal(details.streams[0].codec_name, 'mp3');
+      assert.equal(details.streams[0].channels, 2);
+      assert.ok(Number(details.format.duration) > 0 && Number(details.format.duration) <= 28);
+      const decoded = media('ffmpeg', ['-v', 'error', '-i', path, '-f', 's16le', 'pipe:1']);
+      samples += decoded.length / 4;
+      let crossings = 0;
+      for (let frame = 1; frame < 48_000; frame++) {
+        if (decoded.readInt16LE(frame * 4) > 0 && decoded.readInt16LE((frame - 1) * 4) <= 0) crossings++;
+      }
+      assert.ok(Math.abs(crossings - [800, 400][index]) < 4, String(crossings));
+    }
+    assert.equal(samples, 29.25 * 48_000);
+
+    const short = sampleWave(0.25);
+    const duplicate = await start(await send({ id: first }, [['Long recording.take', short, 'audio/wav']]));
+    assert.equal(duplicate.attachments[0].kind, 'audio');
+    const shortDirectory = join(files, 'Long recording-2');
+    assert.deepEqual(await readdir(shortDirectory), ['000001.mp3']);
+    const mono = media('ffprobe', [
+      '-v', 'error', '-show_entries', 'stream=channels', '-of', 'json', join(shortDirectory, '000001.mp3')
+    ]);
+    assert.equal(JSON.parse(mono).streams[0].channels, 1);
+
+    const m4a = media('ffmpeg', [
+      '-v', 'error', '-i', 'pipe:0', '-c:a', 'aac', '-movflags', '+frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1'
+    ], short);
+    const voice = media('ffmpeg', [
+      '-v', 'error', '-i', 'pipe:0', '-c:a', 'libopus', '-f', 'webm', 'pipe:1'
+    ], short);
+    const video = media('ffmpeg', [
+      '-v', 'error', '-f', 'lavfi', '-i', 'color=size=16x16:duration=0.12', '-c:v', 'libvpx', '-f', 'webm', 'pipe:1'
+    ]);
+    const shared = await start(await send({ id: first }, [
+      ['song.m4a', m4a], ['voice.webm', voice], ['video.webm', video]
+    ]));
+    assert.deepEqual(shared.attachments.map(item => item.kind), ['audio', 'audio', 'file']);
+    assert.deepEqual(await readFile(join(files, 'video.webm')), video);
+    before = (await readdir(files)).sort();
+
+    const previousPrompts = prompts.length;
+    const corrupt = await send({ id: first }, [['staged.bin', binary], ['bad.wav', 'invalid audio']]);
+    assert.equal(corrupt.status, 422, await corrupt.text());
+    assert.deepEqual((await readdir(files)).sort(), before);
+    assert.equal(prompts.length, previousPrompts);
+  } else t.diagnostic('FFmpeg or LAME unavailable. Audio assertions skipped.');
+
   const hasStaging = async () => (await readdir(root)).some(name => name.startsWith('.upload-'));
-  async function beginPartialUpload() {
+  async function beginPartialUpload(firstFile) {
     const partial = request(base + '/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'multipart/form-data; boundary=workspace-test' }
     });
     partial.on('error', () => {});
     partial.write('--workspace-test\r\nContent-Disposition: form-data; name="message"\r\n\r\n' +
-      JSON.stringify({ ...defaults, id: first }) + '\r\n--workspace-test\r\n' +
-      'Content-Disposition: form-data; name="files"; filename="incomplete.bin"\r\n\r\n' + 'x'.repeat(65536));
+      JSON.stringify({ ...defaults, id: first }) + '\r\n--workspace-test\r\n');
+    if (firstFile) {
+      partial.write('Content-Disposition: form-data; name="files"; filename="cancelled.wav"\r\n\r\n');
+      partial.write(firstFile);
+      partial.write('\r\n--workspace-test\r\n');
+    }
+    partial.write('Content-Disposition: form-data; name="files"; filename="incomplete.bin"\r\n\r\n' + 'x'.repeat(65536));
     await eventually(hasStaging);
     return partial;
   }
@@ -166,6 +268,17 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   partial.destroy();
   await eventually(async () => !await hasStaging());
   assert.deepEqual((await readdir(files)).sort(), before);
+
+  if (hasAudio) {
+    const pendingAudio = await beginPartialUpload(audio);
+    await eventually(async () => {
+      const staged = (await readdir(root)).find(name => name.startsWith('.upload-'));
+      return staged && (await readdir(join(root, staged))).includes('audio.pcm');
+    });
+    pendingAudio.destroy();
+    await eventually(async () => !await hasStaging());
+    assert.deepEqual((await readdir(files)).sort(), before);
+  }
 
   const failedSave = await beginPartialUpload();
   const history = join(data, 'chats', first + '.json');
@@ -190,6 +303,11 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const rejected = await send({ id: capacityChat }, [['one-over.bin', '1']]);
   assert.equal(rejected.status, 413);
   assert.equal((await rejected.json()).error, quotaError);
+  if (hasAudio) {
+    const rejectedAudio = await send({ id: capacityChat }, [['over-quota.wav', audio]]);
+    assert.equal(rejectedAudio.status, 413, await rejectedAudio.text());
+    assert.equal(await hasStaging(), false);
+  }
   assert.deepEqual((await readdir(capacityFiles)).sort(), ['exact.bin', 'filler.bin']);
   assert.equal((await api('chats/' + capacityChat, { method: 'DELETE' })).status, 200);
 

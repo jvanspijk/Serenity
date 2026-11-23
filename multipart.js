@@ -39,7 +39,7 @@ export function readMultipart(req) {
       message.resolve(input);
     } catch { reject(invalid()); }
   });
-  parser.on('file', (field, stream, { filename }) => {
+  parser.on('file', (field, stream, { filename, mimeType }) => {
     stream.on('error', () => {});
     if (!foundMessage || field !== 'files' || !filename) {
       stream.resume();
@@ -49,7 +49,7 @@ export function readMultipart(req) {
     stream.once('limit', () => reject(uploadError(413, quotaError)));
     work = work.then(async () => {
       const store = await consumer.promise;
-      if (store) await store(stream, filename);
+      if (store) await store(stream, filename, mimeType);
       else stream.resume();
     });
     work.catch(reject);

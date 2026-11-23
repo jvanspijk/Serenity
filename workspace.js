@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
+import { convertAudio, isAudioUpload } from './audio.js';
 import { quotaError, uploadError, workspaceLimit } from './multipart.js';
 
 const root = resolve(process.env.SERENITY_WORKSPACE_DIR ||
@@ -17,6 +18,7 @@ const instructions = '# Conversation workspace\n\n' +
   '- /scripts is reserved for future use.\n';
 const run = promisify(execFile);
 const rasterExtension = /\.(avif|gif|jpe?g|png|tiff?|webp)$/i;
+const directoryKind = kind => kind === 'pdf' || kind === 'audio';
 const workspacePath = id => join(root, id);
 const fullError = () => uploadError(413, quotaError);
 
@@ -63,7 +65,7 @@ function safeName(name) {
 function uniqueName(name, kind, used) {
   const originalExtension = kind === 'pdf' && /\.pdf$/i.test(name) ? name.slice(-4) : extname(name);
   const sourceExtension = kind === 'file' && !/^\.[^.]{1,12}$/u.test(originalExtension) ? '' : originalExtension;
-  const extension = kind === 'image' ? '.webp' : kind === 'pdf' || !sourceExtension ? '' : '.' + safeName(sourceExtension.slice(1));
+  const extension = kind === 'image' ? '.webp' : directoryKind(kind) || !sourceExtension ? '' : '.' + safeName(sourceExtension.slice(1));
   const base = safeName(name.slice(0, name.length - sourceExtension.length));
   let candidate = base + extension;
   for (let suffix = 2; used.has(candidate.toLowerCase()); suffix++) {
@@ -73,7 +75,7 @@ function uniqueName(name, kind, used) {
   return candidate;
 }
 
-async function fileKind(path, name) {
+async function fileKind(path, name, mimeType) {
   const handle = await open(path);
   try {
     const { buffer, bytesRead } = await handle.read(Buffer.alloc(1024));
@@ -84,7 +86,7 @@ async function fileKind(path, name) {
       return 'image';
     }
     if (rasterExtension.test(name)) throw uploadError(422, 'Could not process image “' + name + '”.');
-    return 'file';
+    return isAudioUpload(name, mimeType) ? 'audio' : 'file';
   } finally {
     await handle.close();
   }
@@ -150,7 +152,7 @@ export async function withWorkspace(id, previousEntries, receive, signal, commit
     if (size > workspaceLimit) throw fullError();
   };
   try {
-    await receive(async (stream, filename) => {
+    await receive(async (stream, filename, mimeType) => {
       signal.throwIfAborted();
       staged ??= await mkdtemp(join(root, '.upload-'));
       const source = join(staged, 'source');
@@ -158,7 +160,10 @@ export async function withWorkspace(id, previousEntries, receive, signal, commit
       await pipeline(stream, createWriteStream(source, { mode: 0o600, flags: 'wx' }), { signal });
       if (stream.truncated) throw fullError();
       const name = Array.from(filename.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).slice(0, 240).join('') || 'Attachment';
-      const kind = await fileKind(source, name);
+      let kind = await fileKind(source, name, mimeType);
+      if (kind === 'audio' && !await convertAudio(source, result, join(staged, 'audio.pcm'), name, charge, signal)) {
+        kind = 'file';
+      }
       if (kind === 'pdf') {
         await convertPDF(source, result, join(staged, 'page'), name, charge, signal);
       } else if (kind === 'image') {
@@ -169,7 +174,7 @@ export async function withWorkspace(id, previousEntries, receive, signal, commit
           throw uploadError(422, 'Could not process image “' + name + '”.');
         }
         charge(bytes);
-      } else {
+      } else if (kind === 'file') {
         charge((await lstat(source)).size);
         await rename(source, result);
       }
@@ -211,7 +216,7 @@ async function attachmentPath(chatId, attachment) {
   if (/[\\/]/.test(attachment.entry) || !attachment.entry || /^\.+$/.test(attachment.entry)) return null;
   const path = join(workspacePath(chatId), 'files', attachment.entry);
   const info = await entryStat(path);
-  return (attachment.kind === 'pdf' ? info?.isDirectory() : info?.isFile()) ? path : null;
+  return (directoryKind(attachment.kind) ? info?.isDirectory() : info?.isFile()) ? path : null;
 }
 
 export async function attachmentPresentation(chatId, attachment) {
@@ -241,7 +246,7 @@ export async function attachmentMarkdown(chatId, attachments) {
     const path = await attachmentPath(chatId, attachment);
     const label = attachment.name.replace(/[\\\[\]]/g, '\\$&');
     if (path) {
-      const url = pathToFileURL(attachment.kind === 'pdf' ? join(path, '/') : path).href;
+      const url = pathToFileURL(directoryKind(attachment.kind) ? join(path, '/') : path).href;
       links.push('- [' + label + '](<' + url + '>)');
     } else links.push('- ' + label + ' (workspace file unavailable)');
   }
