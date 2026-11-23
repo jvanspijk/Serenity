@@ -310,9 +310,12 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 3
 }
 
 @media (max-width: 690px) {
-  body { --sidebar-width: min(285px, 85vw); }
+  body { --sidebar-width: min(285px, 60vw); }
   .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 2; margin-left: calc(-1 * var(--sidebar-width)); }
   .sidebar-open .sidebar { margin-left: 0; }
+  body:not(.sidebar-open) .sidebar-footer { display: none; }
+  .brand { max-width: calc(100% - var(--sidebar-button-size)); }
+  .brand span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scrim {
     display: block; position: fixed; inset: 0; z-index: 1; background: var(--backdrop);
     opacity: 0; visibility: hidden; pointer-events: none;
@@ -320,7 +323,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 3
   }
   .sidebar-open .scrim { opacity: 1; visibility: visible; pointer-events: auto; }
   .thread { padding: 8px 15px 17px; }
-  .dock { padding: 8px 12px max(12px, env(safe-area-inset-bottom)) var(--settings-clearance); }
+  .dock { padding: 8px 12px max(12px, env(safe-area-inset-bottom)); }
   .composer-submit { gap: 4px; }
   .message.user { max-width: 94%; }
 }
