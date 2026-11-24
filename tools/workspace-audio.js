@@ -37,8 +37,9 @@ function wave(samples, channels) {
   return Buffer.concat([header, samples]);
 }
 
-async function renderAudio(source, operations, signal) {
+async function renderAudio(source, signal) {
   const { path, channels, start, end } = source;
+  const operations = source.operations ?? [];
   const edited = operations.length > 0;
   const chunkSeconds = (end - start) / sampleRate;
   const filters = ['aresample=' + sampleRate, `atrim=start_sample=${start}:end_sample=${end}`, 'asetpts=PTS-STARTPTS',
@@ -65,10 +66,14 @@ async function renderAudio(source, operations, signal) {
   return { seconds, data, format: edited ? 'wav' : 'mp3' };
 }
 
+function audioResult(path, { seconds, data, format }) {
+  return { result: { path, seconds }, contentPart: { type: 'input_audio', input_audio: { data: data.toString('base64'), format } } };
+}
+
 export const audioTools = [
   {
-    name: 'audio_transform', label: 'Transform audio',
-    description: 'Trims audio, changes speed while preserving pitch, reduces noise, or normalizes loudness. Returns a stable view path. Use read_file to listen.',
+    name: 'audio_transform', label: 'Transform audio', supportsMedia: true,
+    description: 'Trims audio, changes speed while preserving pitch, reduces noise, or normalizes loudness. Returns the edited clip and its view path.',
     parameters: {
       type: 'object',
       properties: {
@@ -90,13 +95,12 @@ export const audioTools = [
       }
       const source = await workspace.input(path, { kind: 'audio' });
       const operations = appendOperation(source, { start, end, speed, focusSpeech, normalize });
-      const { seconds } = await renderAudio(source, operations, signal);
-      return { path: await workspace.saveView(source, operations), seconds };
+      const output = await renderAudio({ ...source, operations }, signal);
+      return audioResult(await workspace.saveView(source, operations), output);
     }
   }
 ];
 
 export async function readWorkspaceAudio(reference, source, signal) {
-  const { seconds, data, format } = await renderAudio(source, source.operations ?? [], signal);
-  return { result: { path: reference, seconds }, contentPart: { type: 'input_audio', input_audio: { data: data.toString('base64'), format } } };
+  return audioResult(reference, await renderAudio(source, signal));
 }

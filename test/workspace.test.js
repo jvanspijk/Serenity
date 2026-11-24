@@ -438,7 +438,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     ] : [])]
   );
   await start(await send({ id: first, content: 'Inspect edited media' }));
-  const inspected = prompts.at(-1);
+  const [firstEditRound, secondEditRound, inspected] = prompts.slice(-3);
   assert.equal(declarations.filter(tool => tool.function.name === 'read_file').length, 1);
   assert.ok(declarations.some(tool => tool.function.name === 'image_rotate'));
   assert.equal(declarations.some(tool => tool.function.name === 'audio_transform'), hasAudio);
@@ -509,6 +509,10 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     const { input_audio: clip } = multimodal.content.find(part => part.type === 'input_audio');
     assert.equal(clip.format, 'wav');
     assert.ok(clip.data.length <= 8 * 1024 * 1024);
+    const firstEdit = firstEditRound.at(-1).content.find(part => part.type === 'input_audio');
+    assert.equal(firstEdit?.input_audio.format, 'wav');
+    const secondEdit = secondEditRound.at(-1).content.find(part => part.type === 'input_audio');
+    assert.deepEqual(secondEdit?.input_audio, clip);
     assert.deepEqual(await readFile(join(files, 'Long_recording')), audio);
 
     const recipePath = join(mediaDirectory, edited.path.split('/').at(-1).replace('.wav', '.json'));
