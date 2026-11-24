@@ -273,7 +273,8 @@ async function completion(config, model, messages, tools, write, signal) {
       if (!choice) continue;
       finished ||= Boolean(choice.finish_reason);
       const delta = choice.delta || {};
-      write('reasoning', delta.reasoning_content ?? delta.reasoning);
+      if (delta.reasoning_content) write('reasoning', delta.reasoning_content, 'reasoning_content');
+      else write('reasoning', delta.reasoning, 'reasoning');
       if (typeof delta.content === 'string') reasoning.add(delta.content);
       for (const [position, piece] of (delta.tool_calls || []).entries()) {
         const index = piece.index ?? position;
@@ -306,10 +307,14 @@ function recordUsage(reply, usage, timings) {
   if (Object.keys(stats).length) reply.stats = stats;
 }
 
-async function modelMessage(chatId, { role, content, attachments, views }) {
+async function modelMessage(chatId, { role, content, reasoning, reasoningField, attachments, views }, includeReasoning) {
   const links = await attachmentMarkdown(chatId, attachments);
+  const carry = includeReasoning && reasoning;
+  const native = carry && (reasoningField === 'reasoning' || reasoningField === 'reasoning_content');
+  const notes = carry && !native && 'Reasoning from this reply:\n' + reasoning;
   const presented = views?.length && 'Views shown in this reply:\n' + views.map(view => '- ' + view.path).join('\n');
-  return { role, content: [content, links, presented].filter(Boolean).join('\n\n') };
+  return { role, content: [notes, content, links, presented].filter(Boolean).join('\n\n'),
+    ...(native && { [reasoningField]: reasoning }) };
 }
 
 async function presentAttachments(chatId, attachments) {
@@ -398,8 +403,9 @@ async function generate(res, input, receive = async () => {}) {
     const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 12000);
     const deadline = AbortSignal.timeout(15 * 60 * 1000);
     const signal = AbortSignal.any([controller.signal, deadline]);
-    const write = (field, text) => {
+    const write = (field, text, reasoningField) => {
       if (typeof text === 'string' && text) {
+        if (reasoningField) reply.reasoningField = reasoningField;
         reply[field] += text;
         emit(field, { text });
       }
@@ -449,11 +455,14 @@ async function generate(res, input, receive = async () => {}) {
         config.systemPrompt.trim() && config.systemPrompt,
         ...enabled.map(({ systemPrompt }) => systemPrompt)
       ].filter(Boolean).join('\n\n');
+      const priorMessages = history.messages.slice(0, -1);
+      const previousReply = priorMessages.findLast(message => message.role === 'assistant');
       const messages = [
         { role: 'system', content: systemPrompt },
-        ...await Promise.all(history.messages.slice(0, -1)
-          .filter(message => message.role === 'user' || message.content || message.views?.length)
-          .map(message => modelMessage(chatId, message)))
+        ...await Promise.all(priorMessages
+          .filter(message => message.role === 'user' || message.content || message.views?.length ||
+            (message === previousReply && message.reasoning))
+          .map(message => modelMessage(chatId, message, message === previousReply)))
       ];
       const maxToolRounds = 64;
       for (let round = 0; round <= maxToolRounds; round++) {

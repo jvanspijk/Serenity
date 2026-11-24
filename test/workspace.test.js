@@ -99,6 +99,8 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   let declarations;
   let latestTools;
   let interruptNext = false;
+  let reasoningNext;
+  let reasoningField = 'reasoning';
   let viewOnlyNext = false;
   let waitForViewRequest;
   const model = createServer(async (req, res) => {
@@ -117,6 +119,11 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     if (next) declarations = tools;
     if (!next && viewOnlyNext) await Promise.race([waitForViewRequest, delay(5000, undefined, { ref: false })]);
     const delta = next ? { tool_calls: next(messages) } : { content: viewOnlyNext ? '' : 'OK' };
+    if (reasoningNext) {
+      if (reasoningField) delta[reasoningField] = reasoningNext;
+      else delta.content = '<think>' + reasoningNext + '</think>' + delta.content;
+      reasoningNext = undefined;
+    }
     if (!next) viewOnlyNext = false;
     res.end('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: next ? 'tool_calls' : 'stop' }] }) + '\n\ndata: [DONE]\n\n');
   });
@@ -713,4 +720,46 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   assert.equal((await api('chats/' + first, { method: 'DELETE' })).status, 200);
   assert.equal((await api('chats/' + first)).status, 404);
   assert.deepEqual(await readdir(root), [second]);
+
+  const reasoning = '  Candidate /media/view-1.webp looks promising.\n\nKeep the uncertainty.\n';
+  toolRounds.push(() => [call('image_crop', { path: 'Photo.jpg', x: 20, y: 10, width: 100, height: 80 })]);
+  for (let round = 1; round < 64; round++) {
+    toolRounds.push(() => [call('read_file', { path: 'Note.txt' })]);
+  }
+  toolRounds.push(() => {
+    reasoningNext = reasoning;
+    return [call('read_file', { path: 'Note.txt' })];
+  });
+  const limited = await start(await send({ content: 'Find a crop', tools: mediaTools },
+    [['Photo.jpg', photo], ['Note.txt', 'A note.']]));
+  const interrupted = (await (await api('chats/' + limited.chat.id)).json()).messages.at(-1);
+  assert.match(interrupted.issue, /exceeded the tool call limit/);
+  assert.equal(interrupted.content, '');
+  assert.equal(interrupted.reasoning, reasoning);
+
+  const beforeFollowUp = prompts.length;
+  const followUpReasoning = 'The candidate is worth inspecting again.\n';
+  reasoningField = 'reasoning_content';
+  reasoningNext = followUpReasoning;
+  await start(await send({ id: limited.chat.id, content: 'Which crop looked best?' }));
+  const followUp = prompts.at(-1);
+  assert.equal(prompts.length, beforeFollowUp + 1);
+  assert.deepEqual(followUp.slice(-2), [
+    { role: 'assistant', content: '', reasoning },
+    { role: 'user', content: 'Which crop looked best?' }
+  ]);
+  assert.ok(followUp.every(message => !message.tool_calls && message.role !== 'tool' && typeof message.content === 'string'));
+  reasoningField = undefined;
+  reasoningNext = 'Thinking from an unstructured response.';
+  await start(await send({ id: limited.chat.id, content: 'How certain are you?' }));
+  const nextTurn = prompts.at(-1);
+  assert.equal(prompts.length, beforeFollowUp + 2);
+  assert.ok(nextTurn.every(message => !message.content.includes(reasoning) && message.reasoning === undefined));
+  assert.deepEqual(nextTurn.slice(-2), [
+    { role: 'assistant', content: 'OK', reasoning_content: followUpReasoning },
+    { role: 'user', content: 'How certain are you?' }
+  ]);
+  await start(await send({ id: limited.chat.id, content: 'Continue.' }));
+  assert.equal(prompts.at(-1).at(-2).content, 'Reasoning from this reply:\nThinking from an unstructured response.\n\nOK');
+  assert.deepEqual(await readdir(join(root, limited.chat.id, 'media')), ['view-1.json']);
 });
