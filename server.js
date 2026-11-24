@@ -6,7 +6,10 @@ import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
 import { createMcpDiscovery } from './tools/mcp-discovery.js';
+import { createPresentView } from './tools/present-view.js';
 import { readFileTool } from './tools/read-file.js';
+import { renderAudio } from './tools/workspace-audio.js';
+import { renderImage } from './tools/workspace-image.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
 import {
@@ -303,13 +306,36 @@ function recordUsage(reply, usage, timings) {
   if (Object.keys(stats).length) reply.stats = stats;
 }
 
-async function modelMessage(chatId, { role, content, attachments }) {
+async function modelMessage(chatId, { role, content, attachments, views }) {
   const links = await attachmentMarkdown(chatId, attachments);
-  return { role, content: [content, links].filter(Boolean).join('\n\n') };
+  const presented = views?.length && 'Views shown in this reply:\n' + views.map(view => '- ' + view.path).join('\n');
+  return { role, content: [content, links, presented].filter(Boolean).join('\n\n') };
 }
 
 async function presentAttachments(chatId, attachments) {
   return await Promise.all(attachments.map(attachment => attachmentPresentation(chatId, attachment)));
+}
+
+function viewURL(chatId, viewId) {
+  return '/api/chats/' + chatId + '/views/' + viewId;
+}
+
+function sendView(req, res, type, bytes) {
+  const headers = { 'Content-Type': type, 'Content-Length': bytes.length, 'Accept-Ranges': 'bytes' };
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (!range || (!range[1] && !range[2])) {
+    res.writeHead(200, headers);
+    return res.end(bytes);
+  }
+  const start = range[1] ? Number(range[1]) : Math.max(0, bytes.length - Number(range[2]));
+  const end = range[1] && range[2] ? Math.min(bytes.length - 1, Number(range[2])) : bytes.length - 1;
+  if (start > end) {
+    res.writeHead(416, { 'Content-Range': 'bytes */' + bytes.length });
+    return res.end();
+  }
+  res.writeHead(206, { ...headers, 'Content-Length': end - start + 1,
+    'Content-Range': 'bytes ' + start + '-' + end + '/' + bytes.length });
+  return res.end(bytes.subarray(start, end + 1));
 }
 
 async function generate(res, input, receive = async () => {}) {
@@ -324,7 +350,8 @@ async function generate(res, input, receive = async () => {}) {
   if (editing.has(chatId)) fail(409, 'This conversation is being updated.');
   const controller = new AbortController();
   const replyId = randomUUID();
-  active.set(chatId, { controller, replyId });
+  const run = { controller, replyId };
+  active.set(chatId, run);
   const sessions = [];
   const disconnected = () => controller.abort();
   res.on('close', disconnected);
@@ -392,6 +419,16 @@ async function generate(res, input, receive = async () => {}) {
         ].filter(Boolean).join(' ')
       });
       const media = workspaceMedia(chatId, workspaceAttachments, signal);
+      if (mediaKinds.size) {
+        run.attachments = workspaceAttachments;
+        const presentView = createPresentView(mediaKinds, view => {
+          const entry = { ...view, id: randomUUID() };
+          run.views = reply.views ??= [];
+          run.views.push(entry);
+          emit('view', { view: { ...entry, url: viewURL(chatId, entry.id) } });
+        });
+        tools.set(presentView.name, presentView);
+      }
       const servers = config.mcp.filter(server => history.tools.mcp.includes(server.id));
       const connections = await Promise.all(servers.map(async server => {
         try {
@@ -415,7 +452,8 @@ async function generate(res, input, receive = async () => {}) {
       const messages = [
         { role: 'system', content: systemPrompt },
         ...await Promise.all(history.messages.slice(0, -1)
-          .filter(message => message.role === 'user' || message.content).map(message => modelMessage(chatId, message)))
+          .filter(message => message.role === 'user' || message.content || message.views?.length)
+          .map(message => modelMessage(chatId, message)))
       ];
       const maxToolRounds = 32;
       for (let round = 0; round <= maxToolRounds; round++) {
@@ -431,7 +469,7 @@ async function generate(res, input, receive = async () => {}) {
         recordUsage(reply, usage, timings);
         signal.throwIfAborted();
         if (!calls.length) {
-          if (!reply.content) fail(502, 'The model returned no answer.');
+          if (!reply.content && !reply.views?.length) fail(502, 'The model returned no answer.');
           delete reply.issue;
           break;
         }
@@ -609,6 +647,33 @@ createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'image/webp', 'Content-Length': image.length });
       return res.end(image);
     }
+    const viewRoute = /^\/api\/chats\/([^/]+)\/views\/([^/]+)$/.exec(pathname);
+    if (method === 'GET' && viewRoute && uuid.test(viewRoute[1]) && uuid.test(viewRoute[2])) {
+      const [, chatId, viewId] = viewRoute;
+      const run = active.get(chatId);
+      let view = run?.views?.find(view => view.id === viewId);
+      let attachments = run?.attachments;
+      if (!view) {
+        const chat = await load(chatPath(chatId));
+        view = chat?.messages.flatMap(message => message.views || []).find(view => view.id === viewId);
+        if (!view) fail(404, 'View unavailable.');
+        attachments = chat.messages.flatMap(message => message.attachments || []);
+      }
+      const controller = new AbortController();
+      res.once('close', () => controller.abort());
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]);
+      try {
+        const source = await workspaceMedia(chatId, attachments, signal).input(view.path, { kind: view.kind });
+        if (source.kind === 'image') {
+          return sendView(req, res, 'image/webp', (await renderImage(source, signal)).data);
+        }
+        const { data, format } = await renderAudio(source, signal);
+        return sendView(req, res, format === 'wav' ? 'audio/wav' : 'audio/mpeg', data);
+      } catch (error) {
+        if (error instanceof WorkspaceMediaError || error.code === 'ENOENT') fail(404, 'View unavailable.');
+        throw error;
+      }
+    }
     const match = /^\/api\/chats\/([^/]+)(?:\/(stop|tools))?$/.exec(pathname);
     if (match && uuid.test(match[1])) {
       const [, id, action] = match;
@@ -624,6 +689,7 @@ createServer(async (req, res) => {
         chat.tools = chatTools(chat.tools || {}, await settings());
         await Promise.all(chat.messages.map(async message => {
           if (message.attachments) message.attachments = await presentAttachments(id, message.attachments);
+          if (message.views) message.views = message.views.map(view => ({ ...view, url: viewURL(id, view.id) }));
         }));
         return send(res, 200, chat);
       }

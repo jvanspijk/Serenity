@@ -405,10 +405,12 @@ function makeMessage(message, options = {}) {
   const reasoning = element('div', 'reasoning-text', message.reasoning);
   details.append(element('summary', '', 'Reasoning'), reasoning);
   const body = element('div', 'message-text markdown');
+  const views = element('div', 'message-views');
   const pending = element('div', 'pending', 'Waiting for model…');
   const issue = element('div', 'reply-issue');
-  article.append(label, details, body, pending, issue, copy);
+  article.append(label, details, body, views, pending, issue, copy);
   let renderedLength = 0;
+  let renderedViews = 0;
   function update(streaming, activity = '') {
     details.hidden = !message.reasoning;
     reasoning.textContent = message.reasoning;
@@ -416,7 +418,26 @@ function makeMessage(message, options = {}) {
       updateMarkdown(body, message.content);
       renderedLength = message.content.length;
     }
-    pending.hidden = !streaming || Boolean(body.firstChild && !activity);
+    for (const view of (message.views || []).slice(renderedViews)) {
+      const image = view.kind === 'image';
+      const label = view.label || (image ? 'Image' : 'Audio clip');
+      const media = element(image ? 'img' : 'audio');
+      if (image) {
+        media.alt = label;
+        media.loading = 'lazy';
+      } else {
+        media.controls = true;
+        media.preload = 'metadata';
+        media.setAttribute('aria-label', label);
+      }
+      media.addEventListener('error', () => {
+        media.replaceWith(element('span', 'file-name', label + ' unavailable'));
+      }, { once: true });
+      media.src = view.url;
+      views.append(media);
+      renderedViews++;
+    }
+    pending.hidden = !streaming || Boolean((body.firstChild || renderedViews) && !activity);
     pending.textContent = activity || (message.content ? 'Writing reply…' :
       message.reasoning ? 'Thinking…' : 'Waiting for model…');
     issue.hidden = streaming || !message.issue;
@@ -735,6 +756,9 @@ async function submit(message, retry = false) {
         scheduleUpdate();
       } else if (event.type === 'tool') {
         scheduleUpdate('Using ' + event.text);
+      } else if (event.type === 'view') {
+        (reply.views ??= []).push(event.view);
+        scheduleUpdate();
       } else if (event.type === 'done') {
         finished = true;
         reply.issue = event.issue;

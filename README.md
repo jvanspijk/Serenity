@@ -65,6 +65,8 @@ Enable **Image tools** or **Audio tools** in the composer’s tool menu, or set 
 
 Attachment links show the chunk count. Use the optional, 1-based `chunk` argument to `read_file` to select a PDF page or audio segment. If the file was stored as a single file, `read_file` returns it with a warning that it ignored the chunk selection.
 
+Ask Serenity to show a workspace image or PDF page or play an audio clip in the chat. The `present_view` tool displays originals and edited views inline. Presented views remain available while their workspace files are available.
+
 Failed tool calls are logged by the server. Use `docker compose logs serenity` to inspect their arguments. The logs can contain conversation data.
 
 Place trusted plugin folders in `plugins/` and restart the app. See the [plugin guide](docs/plugins.md) and [example plugin](examples/word-count/). Web tools and MCP connections are configured in the app and require a model that supports tool calls.

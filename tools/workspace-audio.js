@@ -37,7 +37,7 @@ function wave(samples, channels) {
   return Buffer.concat([header, samples]);
 }
 
-async function renderAudio(source, signal) {
+export async function renderAudio(source, signal) {
   const { path, channels, start, end } = source;
   const operations = source.operations ?? [];
   const edited = operations.length > 0;

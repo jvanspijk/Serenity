@@ -191,6 +191,10 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: r
 .reasoning-text { max-inline-size: 67ch; margin-top: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-images { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .message-images img { max-width: min(240px, 100%); max-height: 200px; border-radius: 6px; object-fit: contain; }
+.message-views { display: grid; justify-items: start; gap: 12px; margin-block: 8px; }
+.message-views:empty { display: none; }
+.message-views img { display: block; max-width: 100%; max-height: min(65vh, 560px); border-radius: 6px; object-fit: contain; }
+.message-views audio { width: min(100%, 360px); }
 .pending { font-size: .875rem; color: var(--dim); }
 .reply-issue { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--warn); font-size: .875rem; margin-top: 8px; }
 .reply-issue button, .model-notice button { padding: 0; text-decoration: underline; text-underline-offset: 3px; font-size: inherit; color: var(--text); }

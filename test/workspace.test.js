@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { quotaError, workspaceLimit } from '../multipart.js';
+import { sse } from '../protocol.js';
 import { renderImage } from '../tools/workspace-image.js';
 
 function samplePDF() {
@@ -98,6 +99,8 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   let declarations;
   let latestTools;
   let interruptNext = false;
+  let viewOnlyNext = false;
+  let waitForViewRequest;
   const model = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -112,7 +115,9 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const next = toolRounds.shift();
     if (next) declarations = tools;
-    const delta = next ? { tool_calls: next(messages) } : { content: 'OK' };
+    if (!next && viewOnlyNext) await Promise.race([waitForViewRequest, delay(5000, undefined, { ref: false })]);
+    const delta = next ? { tool_calls: next(messages) } : { content: viewOnlyNext ? '' : 'OK' };
+    if (!next) viewOnlyNext = false;
     res.end('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: next ? 'tool_calls' : 'stop' }] }) + '\n\ndata: [DONE]\n\n');
   });
   await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
@@ -177,7 +182,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const attachments = [['Photo.jpg', photo], ['Data?.bin', binary], ['data?.BIN', binary],
     ['Note.txt', 'Attachment bytes must never reach inference\nSecond line'], ['archive.zip', binary], ['work (draft.bin', binary]];
   const upload = await start(await send({ id: first, content: 'Visible message' }, attachments));
-  assert.deepEqual(toolNames(), ['image_crop', 'image_rotate', 'read_file']);
+  assert.deepEqual(toolNames(), ['image_crop', 'image_rotate', 'read_file', 'present_view']);
   const imagePrompt = prompts.at(-1)[0].content;
   assert.match(imagePrompt, /image_crop.*Crops and zooms/);
   assert.doesNotMatch(imagePrompt, /audio/i);
@@ -555,7 +560,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     ['Paged.txt', paged.join('\r\n')], ['Wide.txt', wide.join('\n')]
   ]));
   const checked = prompts.at(-1);
-  assert.deepEqual(declarations.map(tool => tool.function.name), ['read_file']);
+  assert.deepEqual(declarations.map(tool => tool.function.name), ['read_file', 'present_view']);
   assert.deepEqual(Object.keys(declarations[0].function.parameters.properties), ['path', 'chunk', 'offset', 'limit']);
   assert.deepEqual(declarations[0].function.parameters.required, ['path']);
   assert.equal(result(checked, 'read_image').width, 160);
@@ -593,6 +598,58 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
       assert.ok(Math.abs(crossings - [400, 800][index]) < 4, String(crossings));
     }
   }
+  toolRounds.push(() => {
+    viewOnlyNext = true;
+    return [
+      call('present_view', { path: rotated.path, label: 'Rotated crop' }, 'present_image'),
+      call('present_view', { path: '/files/Note.txt' }, 'present_text'),
+      ...(hasAudio ? [
+        call('present_view', { path: result(inspected, 'trim_audio_view').path }, 'present_edited_audio'),
+        call('present_view', { path: audioPath, chunk: 2 }, 'present_original_audio')
+      ] : [])
+    ];
+  });
+  let releaseReply;
+  waitForViewRequest = new Promise(resolve => { releaseReply = resolve; });
+  const presentation = await send({ id: first, content: 'Show the edited views' });
+  assert.equal(presentation.status, 200);
+  const viewEvents = [];
+  let streamedImage;
+  for await (const frame of sse(presentation.body)) {
+    const event = JSON.parse(frame);
+    viewEvents.push(event);
+    if (event.type === 'view' && event.view.kind === 'image') {
+      const image = await fetch(base + event.view.url);
+      assert.equal(image.headers.get('content-type'), 'image/webp');
+      streamedImage = Buffer.from(await image.arrayBuffer());
+      releaseReply();
+    }
+  }
+  const presented = viewEvents.filter(event => event.type === 'view').map(event => event.view);
+  assert.deepEqual(viewEvents.at(-1), { type: 'done' });
+  assert.deepEqual(presented.map(view => view.kind), hasAudio ? ['image', 'audio', 'audio'] : ['image']);
+  const viewResults = prompts.at(-1);
+  assert.deepEqual(result(viewResults, 'present_image'), { path: rotated.path, presented: true });
+  assert.equal(result(viewResults, 'present_text').isError, true);
+  assert.ok(viewResults.every(message => !Array.isArray(message.content)));
+  assert.deepEqual(streamedImage, Buffer.from(imagePart.image_url.url.split(',')[1], 'base64'));
+  const reopened = await (await api('chats/' + first)).json();
+  assert.deepEqual(reopened.messages.at(-1).views, presented);
+  const viewImage = await fetch(base + presented[0].url);
+  assert.equal(viewImage.headers.get('content-type'), 'image/webp');
+  assert.deepEqual(Buffer.from(await viewImage.arrayBuffer()), streamedImage);
+  if (hasAudio) {
+    assert.equal(result(viewResults, 'present_original_audio').path, secondAudioPath);
+    const wav = await fetch(base + presented[1].url, { headers: { Range: 'bytes=0-43' } });
+    assert.equal(wav.status, 206);
+    assert.match(wav.headers.get('content-range'), /^bytes 0-43\/\d+$/);
+    assert.equal(wav.headers.get('content-type'), 'audio/wav');
+    const audioPart = multimodal.content.find(part => part.type === 'input_audio');
+    assert.deepEqual(Buffer.from(await wav.arrayBuffer()), Buffer.from(audioPart.input_audio.data, 'base64').subarray(0, 44));
+    const mp3 = await fetch(base + presented[2].url);
+    assert.equal(mp3.headers.get('content-type'), 'audio/mpeg');
+    assert.ok((await mp3.arrayBuffer()).byteLength > 0);
+  }
   toolRounds.push(() => [call('read_file', { path: rotated.path }),
     call('read_file', { path: 'Photo.jpg' }, 'other_chat_filename'),
     call('read_file', { path: 'duplicate.txt' }, 'ambiguous_filename'),
@@ -603,6 +660,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     assert.equal(result(prompts.at(-1), id).isError, true);
   }
   assert.equal(toolContent(prompts.at(-1), 'exact_path'), 'first');
+  assert.equal((await fetch(base + presented[0].url.replace(first, isolated.chat.id))).status, 404);
   assert.equal((await api('chats/' + isolated.chat.id, { method: 'DELETE' })).status, 200);
 
   const beforeManyReads = prompts.length;
@@ -648,6 +706,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
 
   await rm(workspace, { force: true, recursive: true });
   assert.equal((await fetch(photoURL)).status, 404);
+  assert.equal((await fetch(base + presented[0].url)).status, 404);
   assert.equal((await api('chats/' + first + '/tools', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mediaTools)
   })).status, 200);
