@@ -1,4 +1,38 @@
+import { isDeepStrictEqual } from 'node:util';
 import { bearer, sse } from './protocol.js';
+
+function stripContentMetadata(block) {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return block;
+  const { _meta, annotations, ...content } = block;
+  if (content.type === 'resource_link') delete content.icons;
+  if (content.type === 'resource' && content.resource && typeof content.resource === 'object' && !Array.isArray(content.resource)) {
+    const { _meta: resourceMeta, ...resource } = content.resource;
+    content.resource = resource;
+  }
+  return content;
+}
+
+function duplicatesStructuredContent(block, structuredContent) {
+  if (block?.type !== 'text' || typeof block.text !== 'string' || Object.keys(block).length !== 2) return false;
+  if (block.text === structuredContent) return true;
+  try { return isDeepStrictEqual(JSON.parse(block.text), structuredContent); }
+  catch { return false; }
+}
+
+function modelToolResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const { _meta, ...cleaned } = result;
+  if (cleaned.resultType === 'complete') delete cleaned.resultType;
+  if (cleaned.isError === false) delete cleaned.isError;
+  if (Array.isArray(cleaned.content)) {
+    cleaned.content = cleaned.content.map(stripContentMetadata);
+    if (Object.hasOwn(cleaned, 'structuredContent')) {
+      cleaned.content = cleaned.content.filter(block => !duplicatesStructuredContent(block, cleaned.structuredContent));
+      if (!cleaned.content.length) delete cleaned.content;
+    }
+  }
+  return cleaned;
+}
 
 export async function connectMcp(config, signal) {
   let session;
@@ -85,7 +119,13 @@ export async function connectMcp(config, signal) {
       version = hello.protocolVersion || version;
       await rpc('notifications/initialized', {}, true);
     }
-    return { tools: hello && !hello.capabilities?.tools ? [] : await listTools(), rpc, close };
+    return {
+      tools: hello && !hello.capabilities?.tools ? [] : await listTools(),
+      async callTool(name, args) {
+        return modelToolResult(await rpc('tools/call', { name, arguments: args }));
+      },
+      close
+    };
   } catch (error) {
     await close();
     throw error;

@@ -1,24 +1,28 @@
-import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
 import sharp from 'sharp';
-import { convertAudio, isAudioUpload } from './audio.js';
+import { inspectAudio, isAudioUpload, samplesPerChunk } from './audio.js';
 import { quotaError, uploadError, workspaceLimit } from './multipart.js';
+import { pdfPages, WorkspaceMediaError } from './tools/media-source.js';
+import { renderImage } from './tools/workspace-image.js';
+
+export { WorkspaceMediaError } from './tools/media-source.js';
 
 const root = resolve(process.env.SERENITY_WORKSPACE_DIR ||
   join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'serenity-workspaces'));
 const instructions = '# Conversation workspace\n\n' +
   '- /files contains attachments for this conversation.\n' +
   '- /scripts is reserved for future use.\n';
-const run = promisify(execFile);
 const rasterExtension = /\.(avif|gif|jpe?g|png|tiff?|webp)$/i;
 const directoryKind = kind => kind === 'pdf' || kind === 'audio';
+const mediaKind = kind => kind === 'pdf' ? 'image' : kind;
+const attachmentReference = ({ entry, kind }) => '/files/' + entry + (directoryKind(kind) ? '/' : '');
+const chunkName = (kind, index) => kind === 'audio' ? String(index).padStart(6, '0') + '.mp3' : index + '.webp';
 const workspacePath = id => join(root, id);
 const fullError = () => uploadError(413, quotaError);
 
@@ -56,8 +60,8 @@ async function storedSize(path) {
 }
 
 function safeName(name) {
-  const safe = name.normalize('NFC').replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, '-')
-    .trim().replace(/^\.+|[. ]+$/g, '');
+  const safe = name.normalize('NFC').replace(/[\x00-\x1f\x7f<>:"/\\|?*()\[\]`#%&]/g, '-')
+    .trim().replace(/\s/g, '_').replace(/^\.+|\.+$/g, '');
   const bounded = Array.from(safe).slice(0, 56).join('').replace(/[. ]+$/g, '') || 'attachment';
   return /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(bounded) ? '_' + bounded : bounded;
 }
@@ -92,47 +96,6 @@ async function fileKind(path, name, mimeType) {
   }
 }
 
-async function encodeImage(source, output, { edge, pixels, quality, signal }) {
-  signal.throwIfAborted();
-  const image = sharp(source, { limitInputPixels: 100_000_000 });
-  const { autoOrient } = await image.metadata();
-  const { width, height } = autoOrient;
-  const scale = Math.min(1, edge / Math.max(width, height), Math.sqrt(pixels / (width * height)));
-  const result = await image.autoOrient().resize({
-    width: Math.max(1, Math.floor(width * scale)),
-    height: Math.max(1, Math.floor(height * scale)),
-    fit: 'inside', withoutEnlargement: true
-  }).webp({ quality, smartSubsample: true }).toFile(output);
-  signal.throwIfAborted();
-  return result.size;
-}
-
-async function convertPDF(source, output, scratch, name, charge, signal) {
-  const options = { signal, timeout: 60_000, windowsHide: true, env: { ...process.env, LC_ALL: 'C' } };
-  try {
-    const { stdout } = await run('pdfinfo', [source], options);
-    const pages = Number(/^Pages:\s*(\d+)$/m.exec(stdout.replaceAll('\r', ''))?.[1]);
-    if (!Number.isSafeInteger(pages) || pages < 1 || /^Encrypted:\s*yes/m.test(stdout)) throw new Error('Unreadable PDF.');
-    await mkdir(output);
-    for (let page = 1; page <= pages; page++) {
-      const index = String(page);
-      const rendered = await run('pdftoppm', [
-        '-f', index, '-l', index, '-scale-to', '1800', '-png', '-singlefile', source, scratch
-      ], options);
-      if (/^Syntax Error:\s*(?!No display font for\b)\S/im.test(rendered.stderr)) throw new Error('Unreadable PDF page.');
-      charge(await encodeImage(scratch + '.png', join(output, index + '.webp'), {
-        edge: 1800, pixels: 2_300_000, quality: 92, signal
-      }));
-      await rm(scratch + '.png');
-    }
-  } catch (error) {
-    signal.throwIfAborted();
-    if (error.status) throw error;
-    if (error.code === 'ENOENT') throw uploadError(503, 'Install Poppler to upload PDFs.');
-    throw uploadError(422, 'Could not process PDF “' + name + '”.');
-  }
-}
-
 export async function withWorkspace(id, previousEntries, receive, signal, commit) {
   await ensureRoot();
   const workspace = workspacePath(id);
@@ -159,27 +122,28 @@ export async function withWorkspace(id, previousEntries, receive, signal, commit
       const result = join(staged, randomUUID());
       await pipeline(stream, createWriteStream(source, { mode: 0o600, flags: 'wx' }), { signal });
       if (stream.truncated) throw fullError();
+      charge((await lstat(source)).size);
       const name = Array.from(filename.replace(/[\x00-\x1f\x7f]/g, ' ').trim()).slice(0, 240).join('') || 'Attachment';
       let kind = await fileKind(source, name, mimeType);
-      if (kind === 'audio' && !await convertAudio(source, result, join(staged, 'audio.pcm'), name, charge, signal)) {
-        kind = 'file';
-      }
+      let media;
       if (kind === 'pdf') {
-        await convertPDF(source, result, join(staged, 'page'), name, charge, signal);
+        media = { chunks: await pdfPages(source, name, signal) };
+      } else if (kind === 'audio') {
+        const audio = await inspectAudio(source, name, signal);
+        if (audio) media = { ...audio, chunks: Math.ceil(audio.samples / samplesPerChunk) };
+        else kind = 'file';
       } else if (kind === 'image') {
-        let bytes;
-        try { bytes = await encodeImage(source, result, { edge: 1600, pixels: 1_310_000, quality: 88, signal }); }
+        try {
+          const image = sharp(source, { limitInputPixels: 100_000_000, failOn: 'warning' });
+          await image.autoOrient().resize(1, 1).raw().toBuffer();
+        }
         catch (error) {
           signal.throwIfAborted();
           throw uploadError(422, 'Could not process image “' + name + '”.');
         }
-        charge(bytes);
-      } else if (kind === 'file') {
-        charge((await lstat(source)).size);
-        await rename(source, result);
       }
-      await rm(source, { force: true });
-      attachments.push({ id: randomUUID(), name, kind, entry: uniqueName(name, kind, used), result });
+      await rename(source, result);
+      attachments.push({ id: randomUUID(), name, kind, entry: uniqueName(name, kind, used), media, result });
     });
     signal.throwIfAborted();
     if (!existing) {
@@ -198,7 +162,7 @@ export async function withWorkspace(id, previousEntries, receive, signal, commit
       published.push(path);
     }
     signal.throwIfAborted();
-    return await commit(attachments.map(({ id, name, kind, entry }) => ({ id, name, kind, entry })));
+    return await commit(attachments.map(({ result, ...attachment }) => attachment));
   } catch (error) {
     if (created) await rm(workspace, { recursive: true, force: true });
     else for (const path of published) await rm(path, { recursive: true, force: true });
@@ -212,70 +176,136 @@ export async function deleteWorkspace(id) {
   if (await checkDirectory(root)) await rm(workspacePath(id), { recursive: true, force: true, maxRetries: 3 });
 }
 
-export class WorkspaceMediaError extends Error {}
+function chunkSource(path, attachment, filename, chunk) {
+  const { chunks, samples, channels } = attachment.media;
+  const requested = filename === undefined ? 1 : Number(filename.split('.')[0]);
+  const kind = attachment.kind;
+  if (filename !== undefined && (!Number.isSafeInteger(requested) || requested < 1 ||
+      requested > chunks || filename !== chunkName(kind, requested))) return;
+  const index = chunk ?? requested;
+  if (index > chunks) {
+    throw new WorkspaceMediaError('Chunk ' + index + ' is out of range. This attachment has ' + chunks +
+      (chunks === 1 ? ' chunk.' : ' chunks.'));
+  }
+  const prefix = attachmentReference(attachment);
+  const source = { path, reference: prefix + chunkName(kind, index), chunked: true };
+  if (index < chunks) source.nextPath = prefix + chunkName(kind, index + 1);
+  if (kind === 'pdf') return { ...source, kind: 'image', page: index };
+  return { ...source, kind: 'audio', channels, start: (index - 1) * samplesPerChunk, end: Math.min(index * samplesPerChunk, samples) };
+}
+
+const recipeId = value => createHash('sha256').update(value).digest('hex').slice(0, 36);
+
+function attachmentName(reference) {
+  const name = reference.startsWith('/files/') ? reference.slice('/files/'.length) : reference;
+  return name.endsWith('/') ? name.slice(0, -1) : name;
+}
 
 export function workspaceMedia(chatId, attachments, signal) {
   const workspace = workspacePath(chatId);
   const directory = join(workspace, 'media');
   const sources = new Map();
+  const names = new Map();
   for (const attachment of attachments) {
-    if (!['image', 'audio', 'file'].includes(attachment.kind)) continue;
+    if (!['image', 'audio', 'file', 'pdf'].includes(attachment.kind)) continue;
     const path = join(workspace, 'files', attachment.entry);
-    const url = pathToFileURL(attachment.kind === 'audio' ? join(path, '/') : path).href;
+    const isDirectory = directoryKind(attachment.kind);
+    const url = pathToFileURL(isDirectory ? join(path, '/') : path).href;
     sources.set(url, attachment);
-    sources.set('/files/' + attachment.entry, attachment);
+    sources.set(attachmentReference(attachment), attachment);
+    names.set(attachment.name, names.has(attachment.name) ? null : attachment);
+  }
+  async function attachmentInput(reference, expectedKind, chunk) {
+    const separator = reference.lastIndexOf('/') + 1;
+    const parentReference = reference.slice(0, separator);
+    const parent = sources.get(parentReference) ?? names.get(attachmentName(parentReference));
+    const name = attachmentName(reference);
+    const byName = expectedKind !== 'audio' && !name.includes('/') ? names.get(name) : null;
+    const direct = sources.get(reference) ?? sources.get(reference + '/') ?? byName;
+    const attachment = direct ?? parent;
+    if (!attachment || !await checkDirectory(join(workspace, 'files'))) return;
+    const path = await attachmentPath(chatId, attachment);
+    if (!path) return;
+    if (directoryKind(attachment.kind)) {
+      const kind = mediaKind(attachment.kind);
+      if (expectedKind && (expectedKind !== kind || (expectedKind === 'audio' && direct))) return;
+      return chunkSource(path, attachment, direct ? undefined : reference.slice(separator), chunk);
+    }
+    if (direct && (!expectedKind || direct.kind === expectedKind)) {
+      return { path, kind: direct.kind, reference: attachmentReference(direct) };
+    }
   }
   return {
     async input(reference, { kind: expectedKind, chunk } = {}) {
       signal.throwIfAborted();
-      const attachment = sources.get(reference);
-      const copy = typeof reference === 'string' ? /^\/media\/([a-f0-9-]{36})\.(webp|wav)$/.exec(reference) : null;
-      const kind = attachment?.kind ?? (copy && (copy[2] === 'webp' ? 'image' : 'audio'));
-      if (kind && (!expectedKind || kind === expectedKind) && await checkDirectory(workspace)) {
-        if (chunk !== undefined && (kind !== 'audio' || !Number.isSafeInteger(chunk) || chunk < 1)) {
-          throw new WorkspaceMediaError('Use a positive chunk number for audio recordings.');
+      if (chunk !== undefined && (!Number.isSafeInteger(chunk) || chunk < 1)) {
+        throw new WorkspaceMediaError('Use a positive integer for chunk.');
+      }
+      if (typeof reference === 'string' && await checkDirectory(workspace)) {
+        reference = reference.trim();
+        if (reference.startsWith('<') && reference.endsWith('>') && !names.has(attachmentName(reference))) {
+          reference = reference.slice(1, -1);
         }
-        const selectedChunk = chunk ?? 1;
-        if (attachment && await checkDirectory(join(workspace, 'files'))) {
-          const path = await attachmentPath(chatId, attachment);
-          if (path && kind !== 'audio') return { path, kind };
-          if (path) {
-            const chunks = (await readdir(path, { withFileTypes: true }))
-              .filter(entry => entry.isFile() && /^\d{6}\.mp3$/.test(entry.name)).length;
-            const selected = join(path, String(selectedChunk).padStart(6, '0') + '.mp3');
-            if (selectedChunk <= chunks && (await entryStat(selected))?.isFile()) {
-              return { path: selected, kind, format: 'mp3', chunk: selectedChunk, chunks };
-            }
-            throw new WorkspaceMediaError('The recording has ' + chunks + ' available audio chunks.');
-          }
-        }
-        if (copy && await checkDirectory(directory)) {
+        const source = await attachmentInput(reference, expectedKind, chunk);
+        if (source) return source;
+        const copy = /^\/media\/(view-[1-9]\d*|[a-f0-9]{36})\.(webp|wav)$/.exec(reference);
+        if (copy) {
           const [, name, format] = copy;
-          const path = join(directory, name + '.' + format);
-          if ((await entryStat(path))?.isFile()) {
-            if (selectedChunk !== 1) throw new WorkspaceMediaError('An audio copy has one chunk.');
-            return { path, kind, format };
+          const kind = format === 'webp' ? 'image' : 'audio';
+          const path = join(directory, name + '.json');
+          if ((!expectedKind || kind === expectedKind) && await checkDirectory(directory) &&
+              (await entryStat(path))?.isFile()) {
+            const recipe = JSON.parse(await readFile(path, { encoding: 'utf8', signal }));
+            const baseline = await attachmentInput(recipe.source, kind);
+            if (baseline && (name.startsWith('view-') || recipeId(baseline.reference) === name)) {
+              return { ...baseline, reference, baseReference: baseline.reference, operations: recipe.operations,
+                nextPath: undefined, chunked: false };
+            }
           }
         }
       }
-      throw new WorkspaceMediaError('That ' + (expectedKind || 'file') + ' is unavailable. Use an attachment link from this conversation or a workspace copy path returned by a tool.');
+      const paths = [];
+      for (const attachment of attachments.toReversed()) {
+        const kind = mediaKind(attachment.kind);
+        if (expectedKind && expectedKind !== kind) continue;
+        if (!await attachmentPath(chatId, attachment)) continue;
+        const prefix = attachmentReference(attachment);
+        paths.push(expectedKind === 'audio' ? prefix + chunkName(attachment.kind, 1) : prefix);
+        if (paths.length === 3) break;
+      }
+      const suggestion = paths.length ? ' Available attachment paths: ' + paths.map(path => JSON.stringify(path)).join(', ') + '.' : '';
+      throw new WorkspaceMediaError('That ' + (expectedKind || 'file') + ' is unavailable. Use an attachment link from this conversation or a workspace copy path returned by a tool.' + suggestion);
     },
-    async copy(extension, write) {
+    async saveView(source, operations) {
       signal.throwIfAborted();
+      const baseline = source.baseReference ?? source.reference;
+      const recipe = JSON.stringify({ source: baseline, operations });
+      if (await storedSize(workspace) + Buffer.byteLength(recipe) > workspaceLimit) {
+        throw new WorkspaceMediaError('The conversation workspace is full.');
+      }
       const staging = await mkdtemp(join(root, '.media-'));
-      const name = randomUUID() + '.' + extension;
-      const staged = join(staging, name);
       try {
-        const details = await write(staged);
-        if (await storedSize(workspace) + (await lstat(staged)).size > workspaceLimit) {
-          throw new WorkspaceMediaError('The conversation workspace is full.');
-        }
+        const staged = join(staging, 'view.json');
+        await writeFile(staged, recipe, { mode: 0o600, signal });
         signal.throwIfAborted();
         await mkdir(directory, { recursive: true, mode: 0o700 });
         await checkDirectory(directory);
-        signal.throwIfAborted();
-        await rename(staged, join(directory, name));
-        return { path: '/media/' + name, ...details };
+        let next = 1;
+        for (const file of await readdir(directory)) {
+          const numbered = /^view-([1-9]\d*)\.json$/.exec(file);
+          if (numbered) next = Math.max(next, Number(numbered[1]) + 1);
+        }
+        const extension = source.kind === 'image' ? '.webp' : '.wav';
+        for (;; next++) {
+          signal.throwIfAborted();
+          const name = 'view-' + next;
+          try {
+            await link(staged, join(directory, name + '.json'));
+            return '/media/' + name + extension;
+          } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+          }
+        }
       } finally {
         await rm(staging, { recursive: true, force: true });
       }
@@ -286,8 +316,20 @@ export function workspaceMedia(chatId, attachments, signal) {
 async function attachmentPath(chatId, attachment) {
   if (/[\\/]/.test(attachment.entry) || !attachment.entry || /^\.+$/.test(attachment.entry)) return null;
   const path = join(workspacePath(chatId), 'files', attachment.entry);
-  const info = await entryStat(path);
-  return (directoryKind(attachment.kind) ? info?.isDirectory() : info?.isFile()) ? path : null;
+  if (directoryKind(attachment.kind) && !attachment.media?.chunks) return null;
+  return (await entryStat(path))?.isFile() ? path : null;
+}
+
+export async function workspaceMediaKinds(chatId, attachments) {
+  const kinds = new Set();
+  for (const attachment of attachments) {
+    const kind = mediaKind(attachment.kind);
+    if ((kind === 'image' || kind === 'audio') && !kinds.has(kind) && await attachmentPath(chatId, attachment)) {
+      kinds.add(kind);
+      if (kinds.size === 2) break;
+    }
+  }
+  return kinds;
 }
 
 export async function attachmentPresentation(chatId, attachment) {
@@ -303,7 +345,7 @@ export async function attachmentPreview(chatId, attachment) {
   if (attachment?.kind !== 'image') return null;
   const path = await attachmentPath(chatId, attachment);
   if (!path) return null;
-  try { return await readFile(path); }
+  try { return (await renderImage({ path }, AbortSignal.timeout(30_000))).data; }
   catch (error) {
     if (error.code !== 'ENOENT') throw error;
     return null;
@@ -316,10 +358,14 @@ export async function attachmentMarkdown(chatId, attachments) {
   for (const attachment of attachments) {
     const path = await attachmentPath(chatId, attachment);
     const label = attachment.name.replace(/[\\\[\]]/g, '\\$&');
-    if (path) {
-      const url = pathToFileURL(directoryKind(attachment.kind) ? join(path, '/') : path).href;
-      links.push('- [' + label + '](<' + url + '>)');
-    } else links.push('- ' + label + ' (workspace file unavailable)');
+    const reference = attachmentReference(attachment);
+    if (!path) {
+      links.push('- ' + label + ' (workspace file unavailable)');
+      continue;
+    }
+    const count = attachment.media?.chunks ?? 1;
+    const firstAudioChunk = attachment.kind === 'audio' ? chunkName('audio', 1) : '';
+    links.push('- [' + label + '](' + reference + firstAudioChunk + ') (chunks: ' + count + ')');
   }
   return 'Files added in this message:\n' + links.join('\n');
 }

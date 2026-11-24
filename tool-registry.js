@@ -7,6 +7,6 @@ const webLookupSkill = (await readFile(new URL('./skills/web-lookup/SKILL.md', i
 
 export const builtInTools = [
   { id: 'webSearch', label: 'Web tools', tools: [webLookup], systemPrompt: webLookupSkill },
-  { id: 'workspaceImage', label: 'Image tools', description: 'Crop, zoom, and rotate workspace images', tools: imageTools },
-  { id: 'workspaceAudio', label: 'Audio tools', description: 'Trim, stretch, and clean up workspace audio', tools: audioTools }
+  { id: 'workspaceImage', label: 'Image tools', description: 'Crop, zoom, and rotate workspace images', mediaKind: 'image', tools: imageTools },
+  { id: 'workspaceAudio', label: 'Audio tools', description: 'Trim, stretch, and clean up workspace audio', mediaKind: 'audio', tools: audioTools }
 ];

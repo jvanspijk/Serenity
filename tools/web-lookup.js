@@ -26,7 +26,7 @@ export const webLookup = {
         maxItems: maxActions,
         items: {
           type: 'object',
-          properties: { ref_id: { type: 'string', description: 'A complete public HTTP or HTTPS URL, or a ref_id returned by search_query.' } },
+          properties: { ref_id: { type: 'string', description: 'A complete public HTTP or HTTPS URL, including the url from a search result.' } },
           required: ['ref_id'],
           additionalProperties: false
         }
@@ -47,16 +47,17 @@ export const webLookup = {
         return { ...(typeof q === 'string' && q.length <= 400 && { q }), ...result };
       })),
       Promise.all(targets.map(async target => {
-        const ref_id = target?.ref_id;
-        const result = await fetchPublicUrl(ref_id, signal);
-        const reference = typeof ref_id === 'string' && ref_id.length <= 4096 ? { ref_id } : {};
+        const url = target?.ref_id;
+        const result = await fetchPublicUrl(url, signal);
         if (result.content?.length > pageLimit) {
-          return { ...reference, ...result, content: result.content.slice(0, pageLimit), truncated: true };
+          return { ...result, content: result.content.slice(0, pageLimit), truncated: true };
         }
-        return { ...reference, ...result };
+        return result.isError && typeof url === 'string' && url.length <= 4096 ? { url, ...result } : result;
       }))
     ]);
+    const failed = [...searched, ...opened].every(result => result.isError === true);
     return {
+      ...(failed && { isError: true }),
       ...(searched.length && { search_query: searched }),
       ...(opened.length && { open: opened })
     };

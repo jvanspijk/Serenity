@@ -22,7 +22,7 @@ python -m pip install -r requirements.txt
 Serenity uses `python` on Windows and `python3` elsewhere. Set `SERENITY_PYTHON` to the Python executable if needed, for example when using a virtual environment. Python and DDGS are not required for chat without web search.
 
 To upload PDFs without Docker, install Poppler and make `pdfinfo` and `pdftoppm` available on PATH.
-To upload audio without Docker, install FFmpeg and LAME and make `ffmpeg`, `ffprobe`, and `lame` available on PATH.
+To use audio without Docker, install FFmpeg with the `libmp3lame` encoder and make `ffmpeg` and `ffprobe` available on PATH.
 
 You can set `HOST`, `PORT`, `DATA_DIR`, `INFERENCE_URL`, and `INFERENCE_API_KEY` as environment variables before starting the server.
 
@@ -59,8 +59,12 @@ node --test
 
 Chats and settings are stored in the Docker volume, or in `./data` when running from source. Settings can include API keys and MCP tokens; protect the data and its backups. Serenity has no authentication, so keep it on localhost or behind an authenticated reverse proxy.
 
-Attachments use a temporary workspace for each conversation. The workspace holds up to 250 MiB, including compressed WebP images, PDF pages, MP3 audio, and media tool copies. Each audio upload becomes a directory of numbered MP3 chunks up to 28 seconds long. Deleting a conversation removes its workspace. Temp cleanup or container replacement can remove attachments from an otherwise preserved transcript.
+Attachments use a temporary workspace with a 250 MiB limit per conversation. Serenity stores the original upload bytes and renders previews, PDF pages, and audio chunks on demand. Deleting a conversation removes its workspace. Temp cleanup or container replacement can remove attachments from an otherwise preserved transcript.
 
-Enable **Image tools** or **Audio tools** in the composer’s tool menu, or set their defaults in **Settings**. Image tools crop, zoom, and rotate. Audio tools trim, stretch, and clean up a recording chunk. Each edit returns the workspace path of a new copy. The `read_file` tool is always available for workspace text, images, and audio, including edited copies. Reading images or audio requires a model and endpoint that support that input alongside tool calls.
+Enable **Image tools** or **Audio tools** in the composer’s tool menu, or set their defaults in **Settings**. Crop and rotate accept a PDF attachment path and an optional page number in `chunk`. They return the edited image and a stable view path such as `/media/view-1.webp`. Audio edits return a view path you can pass to `read_file`. Serenity stores the recipe for each view and renders it from the original bytes. Use any view path to continue editing from that state, or the original path to start over. Clips sent to the model stay within 28 seconds. Reading media requires a model and endpoint that support it alongside tool calls.
+
+Attachment links show the chunk count. Use the optional, 1-based `chunk` argument to `read_file` to select a PDF page or audio segment. If the file was stored as a single file, `read_file` returns it with a warning that it ignored the chunk selection.
+
+Failed tool calls are logged by the server. Use `docker compose logs serenity` to inspect their arguments. The logs can contain conversation data.
 
 Place trusted plugin folders in `plugins/` and restart the app. See the [plugin guide](docs/plugins.md) and [example plugin](examples/word-count/). Web tools and MCP connections are configured in the app and require a model that supports tool calls.

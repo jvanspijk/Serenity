@@ -679,7 +679,6 @@ async function submit(message, retry = false) {
       if (stick) scrollDown();
     });
   }
-  const notices = new Set();
   const run = state.run = { model, chatId: null, replyId: null, stopRequested: false };
   navigation++;
   setToolsOpen(false);
@@ -736,9 +735,6 @@ async function submit(message, retry = false) {
         scheduleUpdate();
       } else if (event.type === 'tool') {
         scheduleUpdate('Using ' + event.text);
-      } else if (event.type === 'notice') {
-        notices.add(event.text);
-        status([...notices].join(' '));
       } else if (event.type === 'done') {
         finished = true;
         reply.issue = event.issue;

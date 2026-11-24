@@ -20,7 +20,7 @@ export async function searchWeb(query, signal) {
       child.stdin.on('error', () => {});
       child.stdin.end(JSON.stringify(query.trim()));
     });
-    return { results: results.map(result => ({ ...result, ref_id: result.url })) };
+    return { results };
   } catch {
     signal.throwIfAborted();
     return { isError: true, error: 'Web search could not run. Try opening a known public URL directly.' };

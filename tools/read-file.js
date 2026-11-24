@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { WorkspaceMediaError } from '../workspace.js';
-import { audioChunkParameter, readWorkspaceAudio } from './workspace-audio.js';
+import { ignoredChunkWarning } from './media-source.js';
+import { readWorkspaceAudio } from './workspace-audio.js';
 import { readWorkspaceImage } from './workspace-image.js';
 
 const maxLineLength = 2000;
@@ -43,62 +44,67 @@ async function* textLines(path, signal) {
   }
 }
 
-async function readWorkspaceText(reference, path, start, end, signal) {
+async function readWorkspaceText(path, offset, limit, signal) {
   const lines = [];
-  const truncatedLines = [];
+  const clippedLines = [];
   let lineNumber = 0;
   let bytes = 0;
   let nextLine;
   for await (const line of textLines(path, signal)) {
     lineNumber++;
-    if (lineNumber < start) continue;
+    if (lineNumber < offset) continue;
     const lineBytes = Buffer.byteLength(line.text) + (lines.length ? 1 : 0);
-    if (lines.length === maxLines || bytes + lineBytes > maxTextBytes) {
+    if (lines.length >= limit || bytes + lineBytes > maxTextBytes) {
       nextLine = lineNumber;
       break;
     }
     lines.push(line.text);
     bytes += lineBytes;
-    if (line.clipped) truncatedLines.push(lineNumber);
-    if (lineNumber === end) break;
+    if (line.clipped) clippedLines.push(lineNumber);
   }
-  if (lineNumber < start && start !== 1) throw new WorkspaceMediaError('The file ends before line ' + start + '.');
-  return {
-    result: {
-      path: reference, content: lines.join('\n'),
-      ...(lines.length && { start_line: start, end_line: start + lines.length - 1 }),
-      ...(nextLine && { next_line: nextLine }),
-      ...(truncatedLines.length && { truncated_lines: truncatedLines })
-    }
-  };
+  if (lineNumber < offset && offset !== 1) throw new WorkspaceMediaError('The file ends before line ' + offset + '.');
+  const notes = [];
+  if (clippedLines.length) notes.push('Clipped ' + (clippedLines.length === 1 ? 'line ' : 'lines ') + clippedLines.join(', ') + '.');
+  if (nextLine) notes.push('More lines available. Use offset=' + nextLine + ' to continue.');
+  const content = lines.join('\n');
+  return { result: notes.length ? content + '\n\n[' + notes.join(' ') + ']' : content };
 }
 
 export const readFileTool = {
   name: 'read_file',
   label: 'Read file',
-  description: 'Reads a workspace file. Returns a bounded line range for text, the image itself for WebP, or one audio chunk for MP3 or WAV.',
+  description: 'Reads a workspace file. Returns a bounded line range for text.',
   supportsMedia: true,
   parameters: {
     type: 'object',
     properties: {
-      file_path: { type: 'string', description: 'Attachment link or workspace copy path.' },
-      start_line: { type: 'integer', minimum: 1, description: 'First text line to read, starting at 1. Use the returned next_line to continue.' },
-      end_line: { type: 'integer', minimum: 1, description: 'Last text line to read, inclusive.' },
-      chunk: audioChunkParameter
+      path: { type: 'string', description: 'Exact attachment path, uploaded filename, or workspace edit path.' },
+      chunk: { type: 'integer', minimum: 1, description: 'Chunk number starting at 1 for files stored in chunks.' },
+      offset: { type: 'integer', minimum: 1, description: 'First text line to read, starting at 1.' },
+      limit: { type: 'integer', minimum: 1, description: 'Maximum number of text lines to read.' }
     },
-    required: ['file_path'],
+    required: ['path'],
     additionalProperties: false
   },
-  async run({ file_path: reference, start_line: start, end_line: end, chunk }, signal, workspace) {
-    const source = await workspace.input(reference, { chunk });
+  async run({ path, chunk, offset, limit }, signal, workspace) {
+    const source = await workspace.input(path, { chunk });
+    const reference = source.reference ?? path;
+    const next = source.nextPath ? { next_path: source.nextPath } : {};
+    const warning = chunk !== undefined && !source.chunked ? ignoredChunkWarning : '';
     if (source.kind === 'file') {
-      const first = start === undefined ? 1 : start;
-      if (!Number.isSafeInteger(first) || first < 1 || (end !== undefined && (!Number.isSafeInteger(end) || end < first))) {
-        throw new WorkspaceMediaError('Choose a valid one-based line range.');
+      const first = offset === undefined ? 1 : offset;
+      const count = limit === undefined ? maxLines : limit;
+      if (!Number.isSafeInteger(first) || first < 1 || !Number.isSafeInteger(count) || count < 1) {
+        throw new WorkspaceMediaError('Use positive integers for offset and limit.');
       }
-      return readWorkspaceText(reference, source.path, first, end, signal);
+      const output = await readWorkspaceText(source.path, first, Math.min(count, maxLines), signal);
+      if (source.chunked) return { result: { path: reference, content: output.result, ...next } };
+      if (warning) return { result: output.result + '\n\n[' + warning + ']' };
+      return output;
     }
-    if (start !== undefined || end !== undefined) throw new WorkspaceMediaError('Line ranges are supported for text files.');
-    return source.kind === 'image' ? readWorkspaceImage(reference, source, signal) : readWorkspaceAudio(reference, source, signal);
+    if (offset !== undefined || limit !== undefined) throw new WorkspaceMediaError('Use offset and limit with text files.');
+    const output = source.kind === 'image' ? await readWorkspaceImage(reference, source, signal) :
+      await readWorkspaceAudio(reference, source, signal);
+    return { ...output, result: { ...output.result, ...next, ...(warning && { warning }) } };
   }
 };

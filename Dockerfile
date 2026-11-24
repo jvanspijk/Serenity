@@ -14,7 +14,7 @@ FROM alpine:3.23
 
 WORKDIR /app
 ENV HOST=0.0.0.0 PORT=8080 DATA_DIR=/data PLUGIN_DIR=/data/plugins NODE_ENV=production SERENITY_PYTHON=/opt/search/bin/python
-RUN apk add --no-cache nodejs python3 poppler-utils font-dejavu ffmpeg lame \
+RUN apk add --no-cache nodejs python3 poppler-utils font-dejavu ffmpeg \
     && addgroup -S -g 1000 node \
     && adduser -S -D -H -u 1000 -G node node \
     && mkdir -p /data/chats /data/plugins \

@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import dns from 'node:dns/promises';
 import { EventEmitter } from 'node:events';
 import https from 'node:https';
 import { syncBuiltinESMExports } from 'node:module';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import test from 'node:test';
 import { fetchPublicUrl } from '../tools/fetch-url.js';
+import { webLookup } from '../tools/web-lookup.js';
 
 test('Fetch URL validates every address and redirect before opening a socket', async t => {
   const connections = [];
@@ -74,4 +76,17 @@ test('Fetch URL validates every address and redirect before opening a socket', a
   const large = await run('https://public.example/large');
   assert.equal(large.truncated, true);
   assert.equal(large.content.length, 32000);
+
+  const hit = { title: 'Forecast', url: 'https://public.example/redirect-public', snippet: 'Rain' };
+  t.mock.method(childProcess, 'execFile', (_command, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify([hit])));
+    return { stdin: new PassThrough() };
+  });
+  syncBuiltinESMExports();
+  const signal = new AbortController().signal;
+  const search = await webLookup.run({ search_query: [{ q: 'forecast' }] }, signal);
+  assert.deepEqual(search.search_query, [{ q: 'forecast', results: [hit] }]);
+  const directUrl = 'https://public.example/weather';
+  const lookup = await webLookup.run({ open: [{ ref_id: search.search_query[0].results[0].url }, { ref_id: directUrl }] }, signal);
+  assert.deepEqual(lookup.open, [result, result]);
 });

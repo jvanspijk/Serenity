@@ -5,12 +5,13 @@ import { join, resolve } from 'node:path';
 import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
+import { createMcpDiscovery } from './tools/mcp-discovery.js';
 import { readFileTool } from './tools/read-file.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
 import {
   attachmentMarkdown, attachmentPresentation, attachmentPreview, deleteWorkspace, withWorkspace,
-  workspaceMedia, WorkspaceMediaError
+  workspaceMedia, workspaceMediaKinds, WorkspaceMediaError
 } from './workspace.js';
 
 const host = process.env.HOST || '127.0.0.1';
@@ -377,31 +378,34 @@ async function generate(res, input, receive = async () => {}) {
       }
     };
     try {
-      const enabled = availableTools.filter(({ id }) => history.tools.builtIn.includes(id));
+      const workspaceAttachments = history.messages.flatMap(message => message.attachments || []);
+      const mediaKinds = await workspaceMediaKinds(chatId, workspaceAttachments);
+      const enabled = availableTools.filter(({ id, mediaKind }) =>
+        history.tools.builtIn.includes(id) && (!mediaKind || mediaKinds.has(mediaKind)));
       const tools = new Map(enabled.flatMap(group => group.tools.map(tool => [tool.name, tool])));
-      tools.set(readFileTool.name, readFileTool);
-      const media = workspaceMedia(chatId, history.messages.flatMap(message => message.attachments || []), signal);
+      tools.set(readFileTool.name, {
+        ...readFileTool,
+        description: [
+          readFileTool.description,
+          mediaKinds.has('image') && 'Returns an image for an image file or selected PDF page.',
+          mediaKinds.has('audio') && 'Returns one chunk for an audio file.'
+        ].filter(Boolean).join(' ')
+      });
+      const media = workspaceMedia(chatId, workspaceAttachments, signal);
       const servers = config.mcp.filter(server => history.tools.mcp.includes(server.id));
-      await Promise.all(servers.map(async server => {
+      const connections = await Promise.all(servers.map(async server => {
         try {
           const session = await connectMcp(server, signal);
           sessions.push(session);
-          for (const tool of session.tools) {
-            const name = 'mcp_' + tools.size + '_' + tool.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
-            tools.set(name, {
-              label: server.name + ' · ' + tool.name,
-              description: tool.description,
-              parameters: tool.inputSchema,
-              run: args => session.rpc('tools/call', { name: tool.name, arguments: args })
-            });
-          }
-        } catch {
-          if (!signal.aborted) emit('notice', { text: server.name + ' is unavailable. Continuing without it.' });
+          return { server: server.name, session };
+        } catch (error) {
+          if (!signal.aborted) console.warn(JSON.stringify({ event: 'tool_connection_failed', chatId,
+            replyId, server: server.name, error: error?.message }));
+          return null;
         }
       }));
-      const declarations = [...tools].map(([name, { description, parameters }]) => ({
-        type: 'function', function: { name, description, parameters }
-      }));
+      const discovery = createMcpDiscovery(connections.filter(Boolean), tools);
+      if (discovery) tools.set(discovery.name, discovery);
       const systemPrompt = [
         baseSystemPrompt,
         `Current local date and time: ${localDateTime}${timezone ? ` (${timezone})` : ''}.`,
@@ -413,8 +417,17 @@ async function generate(res, input, receive = async () => {}) {
         ...await Promise.all(history.messages.slice(0, -1)
           .filter(message => message.role === 'user' || message.content).map(message => modelMessage(chatId, message)))
       ];
-      for (let round = 0; round < 6; round++) {
-        const { content: answer, calls, usage, timings } = await completion(config, model, messages, round < 5 ? declarations : [], write, signal);
+      const maxToolRounds = 32;
+      for (let round = 0; round <= maxToolRounds; round++) {
+        const roundTools = round < maxToolRounds ? new Map(tools) : new Map();
+        const descriptions = [];
+        const declarations = [...roundTools].map(([name, { description, parameters }]) => {
+          if (description) descriptions.push(`- \`${name}\`: ${description}`);
+          return { type: 'function', function: { name, parameters } };
+        });
+        messages[0].content = descriptions.length ? systemPrompt + '\n\n# Tool descriptions\n\n' +
+          descriptions.join('\n') : systemPrompt;
+        const { content: answer, calls, usage, timings } = await completion(config, model, messages, declarations, write, signal);
         recordUsage(reply, usage, timings);
         signal.throwIfAborted();
         if (!calls.length) {
@@ -422,13 +435,15 @@ async function generate(res, input, receive = async () => {}) {
           delete reply.issue;
           break;
         }
-        if (round === 5) fail(502, 'The model exceeded the tool call limit.');
+        if (round === maxToolRounds) fail(502, 'The model exceeded the tool call limit.');
         messages.push({ role: 'assistant', content: answer || null, tool_calls: calls });
         const mediaParts = [];
         for (const call of calls) {
           signal.throwIfAborted();
-          const entry = tools.get(call.function.name);
-          let result = { isError: true, content: [{ type: 'text', text: 'This tool is unavailable.' }] };
+          const entry = roundTools.get(call.function.name);
+          const unavailable = 'This tool is unavailable.';
+          let result = { isError: true, content: [{ type: 'text', text: unavailable }] };
+          let failure = entry ? undefined : unavailable;
           if (entry) {
             try {
               const args = JSON.parse(call.function.arguments || '{}');
@@ -438,7 +453,9 @@ async function generate(res, input, receive = async () => {}) {
               if (entry.supportsMedia) {
                 result = output.result;
                 if (output.contentPart) {
-                  mediaParts.push({ type: 'text', text: 'Media from tool call ' + call.id + '.' }, output.contentPart);
+                  const label = output.contentPart.type === 'image_url' ? 'Image from ' + result.path :
+                    'Media from tool call ' + call.id + '.';
+                  mediaParts.push({ type: 'text', text: label }, output.contentPart);
                 }
               } else result = output;
             } catch (error) {
@@ -446,10 +463,15 @@ async function generate(res, input, receive = async () => {}) {
               const message = error instanceof WorkspaceMediaError ? error.message :
                 entry.label + ' could not run. Continuing without its results.';
               result = { isError: true, content: [{ type: 'text', text: message }] };
-              emit('notice', { text: message });
+              failure = error?.message || message;
             }
           }
-          messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+          if (result?.isError === true) {
+            console.warn(JSON.stringify({ event: 'tool_call_failed', chatId, replyId, toolCallId: call.id,
+              tool: call.function.name, arguments: call.function.arguments,
+              error: failure ?? result.error ?? 'Tool returned an error.' }));
+          }
+          messages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
         }
         // Chat Completions accepts image and audio parts in user messages, after all tool replies.
         if (mediaParts.length) messages.push({ role: 'user', content: mediaParts });
