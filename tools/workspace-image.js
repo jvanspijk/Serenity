@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { appendOperation, ignoredChunkWarning, renderPdfPage, WorkspaceMediaError } from './media-source.js';
+import { renderPdfPage, toolMedia, WorkspaceMediaError } from './media-source.js';
 
 const maxEdge = 2048;
 const maxPixels = 2_300_000;
@@ -40,7 +40,7 @@ async function encode(frame, quality, signal) {
     const output = await openPixels(frame).webp(options).toBuffer({ resolveWithObject: true });
     if (4 * Math.ceil(output.data.length / 3) <= maxBase64Bytes) {
       signal.throwIfAborted();
-      return output;
+      return { ...output, contentType: 'image/webp' };
     }
   }
   throw new WorkspaceMediaError('This image is too large to send. Choose a smaller crop.');
@@ -84,23 +84,14 @@ export async function renderImage(source, signal) {
   return encode(frame, operations.length ? undefined : page ? 92 : 88, signal);
 }
 
-function imageResult(path, { data, info: { width, height } }) {
-  return { result: { path, width, height },
-    contentPart: { type: 'image_url', image_url: { url: 'data:image/webp;base64,' + data.toString('base64') } } };
-}
-
-async function editImage(path, chunk, operation, signal, workspace) {
-  const source = await workspace.input(path, { kind: 'image', chunk });
-  const operations = appendOperation(source, operation);
-  const output = await renderImage({ ...source, operations }, signal);
-  const view = imageResult(await workspace.saveView(source, operations), output);
-  if (chunk !== undefined && !source.chunked) view.result.warning = ignoredChunkWarning;
-  return view;
+export function imageResult(path, { data, contentType, info: { width, height } }) {
+  return { path, width, height,
+    [toolMedia]: { type: 'image_url', image_url: { url: 'data:' + contentType + ';base64,' + data.toString('base64') } } };
 }
 
 export const imageTools = [
   {
-    name: 'image_crop', label: 'Crop image', supportsMedia: true,
+    name: 'image_crop', label: 'Crop image',
     description: 'Crops and zooms into an image or PDF page. Returns a new image and view path. The input view stays available.',
     parameters: {
       type: 'object',
@@ -115,16 +106,16 @@ export const imageTools = [
       },
       required: ['path', 'x', 'y', 'width', 'height'], additionalProperties: false
     },
-    async run({ path, chunk, x, y, width, height, zoom = 2 }, signal, workspace) {
+    async run({ path, chunk, x, y, width, height, zoom = 2 }, _signal, workspace) {
       if (![x, y, width, height].every(Number.isSafeInteger) || x < 0 || y < 0 || width < 1 || height < 1 ||
           !Number.isFinite(zoom) || zoom < 1 || zoom > 4) {
         throw new WorkspaceMediaError('Use a valid pixel region and a zoom from 1 to 4.');
       }
-      return editImage(path, chunk, { type: 'crop', x, y, width, height, zoom }, signal, workspace);
+      return workspace.edit(path, { kind: 'image', chunk }, { type: 'crop', x, y, width, height, zoom });
     }
   },
   {
-    name: 'image_rotate', label: 'Rotate image', supportsMedia: true,
+    name: 'image_rotate', label: 'Rotate image',
     description: 'Rotates an image or PDF page. Returns a new image and view path. The input view stays available.',
     parameters: {
       type: 'object',
@@ -132,13 +123,9 @@ export const imageTools = [
         degrees: { type: 'number', description: 'Clockwise rotation in degrees. Negative values rotate counterclockwise.' } },
       required: ['path', 'degrees'], additionalProperties: false
     },
-    async run({ path, chunk, degrees }, signal, workspace) {
+    async run({ path, chunk, degrees }, _signal, workspace) {
       if (!Number.isFinite(degrees)) throw new WorkspaceMediaError('Provide a rotation angle in degrees.');
-      return editImage(path, chunk, { type: 'rotate', degrees: degrees % 360 }, signal, workspace);
+      return workspace.edit(path, { kind: 'image', chunk }, { type: 'rotate', degrees: degrees % 360 });
     }
   }
 ];
-
-export async function readWorkspaceImage(reference, source, signal) {
-  return imageResult(reference, await renderImage(source, signal));
-}

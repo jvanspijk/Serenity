@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { audioInputOptions, sampleRate } from '../audio.js';
-import { appendOperation, WorkspaceMediaError } from './media-source.js';
+import { toolMedia, WorkspaceMediaError } from './media-source.js';
 
 const maxSeconds = 28;
 const maxBase64Bytes = 8 * 1024 * 1024;
@@ -63,16 +63,16 @@ export async function renderAudio(source, signal) {
   if (!bytes.length || !(seconds > 0)) throw new WorkspaceMediaError('The selected time range contains no audio.');
   const data = edited ? wave(bytes, channels) : bytes;
   if (4 * Math.ceil(data.length / 3) > maxBase64Bytes) throw new WorkspaceMediaError('The audio is too large to send. Choose a shorter clip.');
-  return { seconds, data, format: edited ? 'wav' : 'mp3' };
+  return { seconds, data, format: edited ? 'wav' : 'mp3', contentType: edited ? 'audio/wav' : 'audio/mpeg' };
 }
 
-function audioResult(path, { seconds, data, format }) {
-  return { result: { path, seconds }, contentPart: { type: 'input_audio', input_audio: { data: data.toString('base64'), format } } };
+export function audioResult(path, { seconds, data, format }) {
+  return { path, seconds, [toolMedia]: { type: 'input_audio', input_audio: { data: data.toString('base64'), format } } };
 }
 
 export const audioTools = [
   {
-    name: 'audio_transform', label: 'Transform audio', supportsMedia: true,
+    name: 'audio_transform', label: 'Transform audio',
     description: 'Trims audio, changes speed while preserving pitch, reduces noise, or normalizes loudness. Returns the edited clip and its view path.',
     parameters: {
       type: 'object',
@@ -86,21 +86,14 @@ export const audioTools = [
       },
       required: ['path'], additionalProperties: false
     },
-    async run({ path, start = 0, end, speed = 1, focusSpeech = false, normalize = false }, signal, workspace) {
+    async run({ path, start = 0, end, speed = 1, focusSpeech = false, normalize = false }, _signal, workspace) {
       if (!Number.isFinite(start) || start < 0 || start >= maxSeconds ||
           (end !== undefined && (!Number.isFinite(end) || end <= start || end > maxSeconds)) ||
           !Number.isFinite(speed) || speed < 0.25 || speed > 4 ||
           typeof focusSpeech !== 'boolean' || typeof normalize !== 'boolean') {
         throw new WorkspaceMediaError('Choose a valid time range within the chunk and a speed from 0.25 to 4.');
       }
-      const source = await workspace.input(path, { kind: 'audio' });
-      const operations = appendOperation(source, { start, end, speed, focusSpeech, normalize });
-      const output = await renderAudio({ ...source, operations }, signal);
-      return audioResult(await workspace.saveView(source, operations), output);
+      return workspace.edit(path, { kind: 'audio', requireChunkPath: true }, { start, end, speed, focusSpeech, normalize });
     }
   }
 ];
-
-export async function readWorkspaceAudio(reference, source, signal) {
-  return audioResult(reference, await renderAudio(source, signal));
-}

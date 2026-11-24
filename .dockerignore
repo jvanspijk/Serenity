@@ -4,6 +4,7 @@
 !server.js
 !multipart.js
 !workspace.js
+!workspace-media.js
 !audio.js
 !tool-registry.js
 !plugin-sdk.js

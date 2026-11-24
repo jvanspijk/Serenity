@@ -21,7 +21,7 @@ RUN apk add --no-cache nodejs python3 poppler-utils font-dejavu ffmpeg \
     && chown -R node:node /data
 COPY --from=search-dependencies /opt/search /opt/search
 COPY --from=node-dependencies /app/node_modules ./node_modules
-COPY --chown=node:node package.json server.js multipart.js workspace.js audio.js tool-registry.js plugin-sdk.js plugin-runner.mjs mcp.js protocol.js ./
+COPY --chown=node:node package.json server.js multipart.js workspace.js workspace-media.js audio.js tool-registry.js plugin-sdk.js plugin-runner.mjs mcp.js protocol.js ./
 COPY --chown=node:node tools/ ./tools/
 COPY --chown=node:node public/ ./public/
 COPY --chown=node:node skills/ ./skills/

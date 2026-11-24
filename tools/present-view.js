@@ -1,10 +1,8 @@
-import { ignoredChunkWarning, WorkspaceMediaError } from './media-source.js';
+import { WorkspaceMediaError } from './media-source.js';
+import { workspaceRenderers } from '../workspace-media.js';
 
-export function createPresentView(mediaKinds, present) {
-  const types = [
-    mediaKinds.has('image') && 'an image or PDF page',
-    mediaKinds.has('audio') && 'an audio clip with playback controls'
-  ].filter(Boolean).join(' or ');
+export function createPresentView(media, present) {
+  const types = Array.from(media.values(), item => item.presentLabel).join(' or ');
   return {
     name: 'present_view',
     label: 'Present view',
@@ -24,12 +22,12 @@ export function createPresentView(mediaKinds, present) {
         throw new WorkspaceMediaError('Use a view label of up to 160 characters.');
       }
       const source = await workspace.input(path, { chunk });
-      if (source.kind !== 'image' && source.kind !== 'audio') {
+      if (!workspaceRenderers.has(source.kind)) {
         throw new WorkspaceMediaError('Choose an image, PDF page, or audio clip.');
       }
       signal.throwIfAborted();
       present({ path: source.reference, kind: source.kind, label: label?.trim() });
-      return { path: source.reference, presented: true, ...(chunk !== undefined && !source.chunked && { warning: ignoredChunkWarning }) };
+      return { path: source.reference, presented: true, ...(source.warning && { warning: source.warning }) };
     }
   };
 }
