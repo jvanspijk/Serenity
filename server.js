@@ -455,7 +455,7 @@ async function generate(res, input, receive = async () => {}) {
           .filter(message => message.role === 'user' || message.content || message.views?.length)
           .map(message => modelMessage(chatId, message)))
       ];
-      const maxToolRounds = 32;
+      const maxToolRounds = 64;
       for (let round = 0; round <= maxToolRounds; round++) {
         const roundTools = round < maxToolRounds ? new Map(tools) : new Map();
         const descriptions = [];

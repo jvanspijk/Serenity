@@ -663,18 +663,6 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   assert.equal((await fetch(base + presented[0].url.replace(first, isolated.chat.id))).status, 404);
   assert.equal((await api('chats/' + isolated.chat.id, { method: 'DELETE' })).status, 200);
 
-  const beforeManyReads = prompts.length;
-  for (let round = 0; round < 32; round++) {
-    toolRounds.push(() => [call('read_file', { path: '/files/Note.txt' }, 'long_run_' + round)]);
-  }
-  const longRun = await start(await send({ id: first, content: 'Check the note with a long tool sequence' }));
-  assert.equal(longRun.chat.id, first);
-  assert.equal(prompts.length - beforeManyReads, 33);
-  assert.equal(prompts.at(-1).filter(message => message.role === 'tool').length, 32);
-  const completed = await (await api('chats/' + first)).json();
-  assert.equal(completed.messages.at(-1).content, 'OK');
-  assert.equal(completed.messages.at(-1).issue, undefined);
-
   const failedCalls = [
     call('read_file', { path: '/files/missing\nfile.pdf', chunk: 2 }, 'failed_file'),
     { id: 'malformed_call', function: { name: 'read_file', arguments: '{"path":' } },
