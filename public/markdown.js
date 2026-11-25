@@ -34,3 +34,30 @@ for (const rule of ['th_open', 'td_open']) {
 export function renderMarkdown(text) {
   return markdown.render(text).trim();
 }
+
+export function streamMarkdown(target) {
+  const boundary = document.createComment('');
+  const range = document.createRange();
+  target.replaceChildren(boundary);
+  target.classList.add('markdown');
+  let offset = 0;
+
+  return text => {
+    const tail = text.slice(offset);
+    const lines = tail.split(/(?<=\n)|(?<=\r)(?!\n)/);
+    const env = {};
+    const tokens = markdown.parse(tail, env);
+    // Keep the last block reparsable. An unfinished line can change where it starts.
+    const split = Math.max(0, tokens.findLastIndex(token => token.level === 0 && token.map?.[0] < lines.length - 1));
+
+    range.setStartAfter(boundary);
+    range.setEnd(target, target.childNodes.length);
+    range.deleteContents();
+    if (split > 0) {
+      const html = markdown.renderer.render(tokens.slice(0, split), markdown.options, env);
+      boundary.before(range.createContextualFragment(html));
+      offset += lines.slice(0, tokens[split].map[0]).join('').length;
+    }
+    target.insertAdjacentHTML('beforeend', markdown.renderer.render(tokens.slice(split), markdown.options, env));
+  };
+}

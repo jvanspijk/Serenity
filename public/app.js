@@ -17,12 +17,12 @@ const navigationKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight
 const selectedChats = new Set();
 let selectionAnchor;
 let clickedChat;
-let renderMarkdown;
+let markdown;
 
 async function loadMarkdown() {
-  if (renderMarkdown) return;
+  if (markdown) return;
   try {
-    ({ renderMarkdown } = await import('./markdown.js'));
+    markdown = await import('./markdown.js');
   } catch {
     // Replies remain readable as plain text if the renderer fails to load.
   }
@@ -419,16 +419,23 @@ function makeMessage(message, options = {}) {
   const pending = element('div', 'pending', 'Waiting for model…');
   const issue = element('div', 'reply-issue');
   article.append(label, details, body, views, pending, issue, copy);
+  let updateMarkdown;
   let renderedLength = 0;
   let renderedViews = 0;
   function update(streaming, activity = '') {
     details.hidden = !message.reasoning;
     reasoning.textContent = message.reasoning;
-    if (!streaming && message.content && renderMarkdown) {
-      body.innerHTML = renderMarkdown(message.content);
-      body.classList.add('markdown');
-    } else if (message.content.length > renderedLength) {
-      text.appendData(message.content.slice(renderedLength));
+    if (message.content) {
+      const changed = message.content.length !== renderedLength;
+      if (markdown && !streaming) {
+        body.innerHTML = markdown.renderMarkdown(message.content);
+        body.classList.add('markdown');
+      } else if (markdown && (changed || !updateMarkdown)) {
+        updateMarkdown ??= markdown.streamMarkdown(body);
+        updateMarkdown(message.content);
+      } else if (changed) {
+        text.appendData(message.content.slice(renderedLength));
+      }
       renderedLength = message.content.length;
     }
     for (const view of (message.views || []).slice(renderedViews)) {
@@ -702,17 +709,17 @@ async function submit(message, retry = false) {
   const assistant = makeMessage(reply, { streaming: true, canRetry: true });
   let started = false;
   let finished = false;
-  let updateFrame = 0;
+  let updateTimer;
   let activity = '';
   function scheduleUpdate(nextActivity = '') {
     activity = nextActivity;
-    if (updateFrame) return;
-    updateFrame = requestAnimationFrame(() => {
-      updateFrame = 0;
+    if (updateTimer) return;
+    updateTimer = setTimeout(() => {
+      updateTimer = undefined;
       const stick = nearBottom();
       assistant.update(true, activity);
       if (stick) scrollDown();
-    });
+    }, 80);
   }
   const run = state.run = { model, chatId: null, replyId: null, stopRequested: false };
   navigation++;
@@ -766,8 +773,14 @@ async function submit(message, retry = false) {
         renderHistory();
         scrollDown();
       } else if (event.type === 'content' || event.type === 'reasoning') {
+        const firstContent = event.type === 'content' && !reply.content && event.text;
         reply[event.type] += event.text;
         scheduleUpdate();
+        if (firstContent && !markdown) {
+          loadMarkdown().then(() => {
+            if (state.run === run) scheduleUpdate(activity);
+          });
+        }
       } else if (event.type === 'tool') {
         scheduleUpdate('Using ' + event.text);
       } else if (event.type === 'view') {
@@ -795,7 +808,7 @@ async function submit(message, retry = false) {
     }
   } finally {
     if (started && reply.content) await loadMarkdown();
-    if (updateFrame) cancelAnimationFrame(updateFrame);
+    clearTimeout(updateTimer);
     const stick = nearBottom();
     if (started) {
       assistant.update(false);
