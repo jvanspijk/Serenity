@@ -1,4 +1,3 @@
-import { updateMarkdown } from './markdown.js';
 import { sse } from './protocol.js';
 
 const $ = id => document.getElementById(id);
@@ -18,6 +17,16 @@ const navigationKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight
 const selectedChats = new Set();
 let selectionAnchor;
 let clickedChat;
+let renderMarkdown;
+
+async function loadMarkdown() {
+  if (renderMarkdown) return;
+  try {
+    ({ renderMarkdown } = await import('./markdown.js'));
+  } catch {
+    // Replies remain readable as plain text if the renderer fails to load.
+  }
+}
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -404,7 +413,8 @@ function makeMessage(message, options = {}) {
   const details = element('details', 'reasoning');
   const reasoning = element('div', 'reasoning-text', message.reasoning);
   details.append(element('summary', '', 'Reasoning'), reasoning);
-  const body = element('div', 'message-text markdown');
+  const body = element('div', 'message-text');
+  const text = body.appendChild(document.createTextNode(''));
   const views = element('div', 'message-views');
   const pending = element('div', 'pending', 'Waiting for model…');
   const issue = element('div', 'reply-issue');
@@ -414,8 +424,11 @@ function makeMessage(message, options = {}) {
   function update(streaming, activity = '') {
     details.hidden = !message.reasoning;
     reasoning.textContent = message.reasoning;
-    if (message.content.length !== renderedLength) {
-      updateMarkdown(body, message.content);
+    if (!streaming && message.content && renderMarkdown) {
+      body.innerHTML = renderMarkdown(message.content);
+      body.classList.add('markdown');
+    } else if (message.content.length > renderedLength) {
+      text.appendData(message.content.slice(renderedLength));
       renderedLength = message.content.length;
     }
     for (const view of (message.views || []).slice(renderedViews)) {
@@ -437,7 +450,7 @@ function makeMessage(message, options = {}) {
       views.append(media);
       renderedViews++;
     }
-    pending.hidden = !streaming || Boolean((body.firstChild || renderedViews) && !activity);
+    pending.hidden = !streaming || Boolean((message.content || renderedViews) && !activity);
     pending.textContent = activity || (message.content ? 'Writing reply…' :
       message.reasoning ? 'Thinking…' : 'Waiting for model…');
     issue.hidden = streaming || !message.issue;
@@ -616,6 +629,7 @@ async function openChat(id) {
   const request = ++navigation;
   try {
     const chat = await api('chats/' + encodeURIComponent(id));
+    if (chat.messages.some(message => message.role === 'assistant' && message.content)) await loadMarkdown();
     if (request !== navigation || chatLocked()) return;
     state.chat = chat;
     const sidebarHadFocus = $('sidebar').contains(document.activeElement) && mobile.matches;
@@ -780,6 +794,7 @@ async function submit(message, retry = false) {
       }
     }
   } finally {
+    if (started && reply.content) await loadMarkdown();
     if (updateFrame) cancelAnimationFrame(updateFrame);
     const stick = nearBottom();
     if (started) {

@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
@@ -78,17 +79,54 @@ const paletteOptions = paletteNames.filter(name => colorPalettes.has(name)).map(
 const index = (await readFile(new URL('./public/index.html', import.meta.url), 'utf8'))
   .replace('<!-- Palette stylesheets -->', paletteLinks.join('\n  '))
   .replace('<!-- Palette options -->', paletteOptions.join('\n              '));
+const publicFile = path => readFile(new URL('./public' + path, import.meta.url));
 const staticFiles = new Map(await Promise.all([
-  ['/style.css', 'style.css', 'text/css'],
-  ...[...colorPalettes].map(name => ['/palettes/' + name + '.css', 'palettes/' + name + '.css', 'text/css']),
-  ['/app.js', 'app.js', 'text/javascript'],
-  ['/markdown.js', 'markdown.js', 'text/javascript'],
-  ['/icons.svg', 'icons.svg', 'image/svg+xml']
-].map(async ([url, file, type]) => [url, [type, await readFile(new URL('./public/' + file, import.meta.url))]])));
-staticFiles.set('/', ['text/html', index]);
-staticFiles.set('/markdown-it.mjs', ['text/javascript',
-  await readFile(new URL(import.meta.resolve('markdown-it/browser')))]);
-staticFiles.set('/protocol.js', ['text/javascript', await readFile(new URL('./protocol.js', import.meta.url))]);
+  ['/', 'text/html', Buffer.from(index)],
+  ['/style.css', 'text/css', publicFile('/style.css')],
+  ...[...colorPalettes].map(name => {
+    const path = '/palettes/' + name + '.css';
+    return [path, 'text/css', publicFile(path)];
+  }),
+  ['/app.js', 'text/javascript', publicFile('/app.js')],
+  ['/markdown.js', 'text/javascript', publicFile('/markdown.js')],
+  ['/icons.svg', 'image/svg+xml', publicFile('/icons.svg')],
+  ['/markdown-it.mjs', 'text/javascript', readFile(new URL(import.meta.resolve('markdown-it/browser')))],
+  ['/protocol.js', 'text/javascript', readFile(new URL('./protocol.js', import.meta.url))]
+].map(async ([url, type, source]) => {
+  const body = await source;
+  const tag = '"' + createHash('sha256').update(body).digest('base64url') + '"';
+  return [url, { type, body, gzip: gzipSync(body), tag }];
+})));
+
+function sendStatic(req, res, { type, body, gzip, tag }) {
+  res.setHeader('Vary', 'Accept-Encoding');
+  const encodings = new Map((req.headers['accept-encoding'] || '').toLowerCase().split(',').map(value => {
+    const [name, weight = 'q=1'] = value.trim().split(/\s*;\s*/);
+    return [name, Number(weight.slice(2))];
+  }));
+  const wildcard = encodings.get('*');
+  const gzipQuality = encodings.get('gzip') ?? wildcard ?? 0;
+  const identityQuality = encodings.get('identity') ?? (wildcard === 0 ? 0 : 1);
+  const useGzip = gzipQuality > 0 && gzipQuality >= identityQuality;
+  if (!useGzip && identityQuality === 0) {
+    res.writeHead(406);
+    return res.end();
+  }
+
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('ETag', 'W/' + tag);
+  const validators = (req.headers['if-none-match'] || '').split(',').map(value => value.trim().replace(/^W\//, ''));
+  if (validators.includes('*') || validators.includes(tag)) {
+    res.writeHead(304);
+    return res.end();
+  }
+  if (useGzip) {
+    res.setHeader('Content-Encoding', 'gzip');
+    body = gzip;
+  }
+  res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Content-Length': body.length });
+  return res.end(body);
+}
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -544,10 +582,8 @@ createServer(async (req, res) => {
     if (origin && (!/^https?:\/\//.test(origin) || new URL(origin).host !== req.headers.host)) {
       fail(403, 'Cross-origin requests are disabled.');
     }
-    if (method === 'GET' && staticFiles.has(pathname)) {
-      const [type, body] = staticFiles.get(pathname);
-      res.writeHead(200, { 'Content-Type': type + '; charset=utf-8' });
-      return res.end(body);
+    if ((method === 'GET' || method === 'HEAD') && staticFiles.has(pathname)) {
+      return sendStatic(req, res, staticFiles.get(pathname));
     }
     if (pathname === '/api/settings' && method === 'GET') return send(res, 200, publicSettings(await settings()));
     if (pathname === '/api/settings' && method === 'PUT') {
