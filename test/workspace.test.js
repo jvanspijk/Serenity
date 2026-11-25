@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { quotaError, workspaceLimit } from '../multipart.js';
 import { sse } from '../protocol.js';
@@ -133,21 +132,27 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   await once(reserve, 'listening');
   const port = reserve.address().port;
   await new Promise(resolve => reserve.close(resolve));
-  const app = spawn(process.execPath, ['server.js'], {
-    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), DATA_DIR: data, SERENITY_WORKSPACE_DIR: root,
-      INFERENCE_URL: 'http://127.0.0.1:' + model.address().port + '/v1' },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
+  const env = { ...process.env, HOST: '127.0.0.1', PORT: String(port), DATA_DIR: data,
+    INFERENCE_URL: 'http://127.0.0.1:' + model.address().port + '/v1' };
+  delete env.SERENITY_WORKSPACE_DIR;
+  let app;
   let serverLog = '';
-  app.stderr.setEncoding('utf8').on('data', chunk => { serverLog += chunk; });
+  async function startServer() {
+    app = spawn(process.execPath, ['server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    app.stderr.setEncoding('utf8').on('data', chunk => { serverLog += chunk; });
+    await Promise.race([once(app.stdout, 'data'), once(app, 'exit').then(() => assert.fail('The server exited.'))]);
+  }
+  async function stopServer() {
+    if (!app?.pid || app.exitCode !== null || app.signalCode !== null) return;
+    const stopped = once(app, 'exit');
+    app.kill();
+    await stopped;
+  }
   t.after(async () => {
-    if (app.exitCode === null) {
-      app.kill();
-      await once(app, 'exit');
-    }
+    await stopServer();
     await rm(data, { recursive: true, force: true, maxRetries: 3 });
   });
-  await Promise.race([once(app.stdout, 'data'), once(app, 'exit').then(() => assert.fail('The server exited.'))]);
+  await startServer();
   const base = 'http://127.0.0.1:' + port;
   const api = (path, options) => fetch(base + '/api/' + path, options);
   const call = (name, args, id = name) => ({ id, function: { name, arguments: JSON.stringify(args) } });
@@ -173,7 +178,6 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const textOnlyPrompt = prompts.at(-1)[0].content;
   assert.match(textOnlyPrompt, /Reads a workspace file/);
   assert.doesNotMatch(textOnlyPrompt, /image|audio/i);
-  assert.equal(latestTools[0].function.description, undefined);
   const workspace = join(root, first);
   const files = join(workspace, 'files');
   const agents = await readFile(join(workspace, 'AGENTS.md'));
@@ -193,8 +197,6 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const imagePrompt = prompts.at(-1)[0].content;
   assert.match(imagePrompt, /image_crop.*Crops and zooms/);
   assert.doesNotMatch(imagePrompt, /audio/i);
-  assert.deepEqual(prompts.at(-1).filter(message => message.role === 'user').map(message => message.content)
-    .filter(content => typeof content === 'string' && content.includes('# Tool descriptions')), []);
   assert.equal(upload.attachments.length, 6);
   assert.deepEqual(await readFile(join(files, 'Data-.bin')), binary);
   assert.deepEqual(await readFile(join(files, 'data--2.BIN')), binary);
@@ -234,7 +236,6 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
         call('read_file', { path: '/files/Two: pages?.pdf' }, 'pdf_filename_with_prefix')],
       messages => [call('read_file', { path: fileResult(messages, 'pdf_filename').next_path }, 'second_page'),
         call('read_file', { path: 'Two: pages?.pdf', chunk: 2 }, 'selected_page'),
-        call('read_file', { path: pathToFileURL(join(originalPdf, '1.webp')).href }, 'file_url_page'),
         call('read_file', { path: directoryPath + '3.webp' }, 'missing_page'),
         call('read_file', { path: directoryPath, chunk: 3 }, 'out_of_range'),
         call('read_file', { path: directoryPath, chunk: 0 }, 'invalid_chunk'),
@@ -248,7 +249,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     const firstPage = fileResult(pageReply, 'pdf_directory');
     assert.equal(firstPage.path, directoryPath + '1.webp');
     assert.equal(firstPage.next_path, directoryPath + '2.webp');
-    for (const id of ['pdf_filename', 'pdf_filename_with_prefix', 'file_url_page']) {
+    for (const id of ['pdf_filename', 'pdf_filename_with_prefix']) {
       assert.deepEqual(fileResult(pageReply, id), firstPage);
     }
     const lastPage = fileResult(pageReply, 'second_page');
@@ -260,16 +261,16 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     const firstMedia = prompts.at(-2).at(-1).content;
     const laterMedia = pageReply.at(-1).content;
     for (const [parts, paths] of [[firstMedia, [firstPage.path, firstPage.path, firstPage.path]],
-      [laterMedia, [lastPage.path, lastPage.path, firstPage.path]]]) {
+      [laterMedia, [lastPage.path, lastPage.path]]]) {
       assert.deepEqual(parts.map(part => part.type === 'text' ? part.text : part.type),
         paths.flatMap(path => ['Image from ' + path, 'image_url']));
     }
     const firstImages = firstMedia.filter(part => part.type === 'image_url');
     const laterImages = laterMedia.filter(part => part.type === 'image_url');
     assert.equal(firstImages.length, 3);
-    assert.equal(laterImages.length, 3);
+    assert.equal(laterImages.length, 2);
     assert.deepEqual(laterImages[0], laterImages[1]);
-    assert.ok([...firstImages, laterImages[2]].every(image => image.image_url.url === firstImages[0].image_url.url));
+    assert.ok(firstImages.every(image => image.image_url.url === firstImages[0].image_url.url));
     for (const [index, channel] of [0, 2].entries()) {
       const dataUrl = [firstImages[0], laterImages[0]][index].image_url.url;
       const page = Buffer.from(dataUrl.split(',')[1], 'base64');
@@ -513,7 +514,6 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     assert.deepEqual(await readFile(join(files, 'Two-_pages-')), Buffer.from(samplePDF()));
   }
   if (hasAudio) {
-    assert.ok(!Object.hasOwn(declarations.find(tool => tool.function.name === 'audio_transform').function.parameters.properties, 'chunk'));
     const edited = result(inspected, 'read_audio');
     assert.ok(Math.abs(edited.seconds - 1.4) < 0.1);
     assert.notEqual(edited.path, result(inspected, 'audio_transform').path);
@@ -682,7 +682,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const events = (await response.text()).split('\n').filter(line => line.startsWith('data: '))
     .map(line => JSON.parse(line.slice(6)));
   const errorChat = events[0].chat.id;
-  assert.ok(!events.some(event => event.type === 'notice'));
+  assert.deepEqual(events[0].tools, { builtIn: ['webSearch'], mcp: [] });
   assert.equal(events.at(-1).type, 'done');
   assert.equal(events.at(-1).issue, undefined);
   assert.equal(events.find(event => event.type === 'content').text, 'OK');

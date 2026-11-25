@@ -1,8 +1,6 @@
 import { createReadStream } from 'node:fs';
-import { WorkspaceMediaError } from '../workspace.js';
-import { ignoredChunkWarning } from './media-source.js';
-import { readWorkspaceAudio } from './workspace-audio.js';
-import { readWorkspaceImage } from './workspace-image.js';
+import { WorkspaceMediaError } from './media-source.js';
+import { workspaceRenderers } from '../workspace-media.js';
 
 const maxLineLength = 2000;
 const maxTextBytes = 16_000;
@@ -67,14 +65,13 @@ async function readWorkspaceText(path, offset, limit, signal) {
   if (clippedLines.length) notes.push('Clipped ' + (clippedLines.length === 1 ? 'line ' : 'lines ') + clippedLines.join(', ') + '.');
   if (nextLine) notes.push('More lines available. Use offset=' + nextLine + ' to continue.');
   const content = lines.join('\n');
-  return { result: notes.length ? content + '\n\n[' + notes.join(' ') + ']' : content };
+  return notes.length ? content + '\n\n[' + notes.join(' ') + ']' : content;
 }
 
 export const readFileTool = {
   name: 'read_file',
   label: 'Read file',
   description: 'Reads a workspace file. Returns a bounded line range for text.',
-  supportsMedia: true,
   parameters: {
     type: 'object',
     properties: {
@@ -88,23 +85,21 @@ export const readFileTool = {
   },
   async run({ path, chunk, offset, limit }, signal, workspace) {
     const source = await workspace.input(path, { chunk });
-    const reference = source.reference ?? path;
-    const next = source.nextPath ? { next_path: source.nextPath } : {};
-    const warning = chunk !== undefined && !source.chunked ? ignoredChunkWarning : '';
+    const { warning } = source;
     if (source.kind === 'file') {
       const first = offset === undefined ? 1 : offset;
       const count = limit === undefined ? maxLines : limit;
       if (!Number.isSafeInteger(first) || first < 1 || !Number.isSafeInteger(count) || count < 1) {
         throw new WorkspaceMediaError('Use positive integers for offset and limit.');
       }
-      const output = await readWorkspaceText(source.path, first, Math.min(count, maxLines), signal);
-      if (source.chunked) return { result: { path: reference, content: output.result, ...next } };
-      if (warning) return { result: output.result + '\n\n[' + warning + ']' };
-      return output;
+      const text = await readWorkspaceText(source.path, first, Math.min(count, maxLines), signal);
+      return warning ? text + '\n\n[' + warning + ']' : text;
     }
     if (offset !== undefined || limit !== undefined) throw new WorkspaceMediaError('Use offset and limit with text files.');
-    const output = source.kind === 'image' ? await readWorkspaceImage(reference, source, signal) :
-      await readWorkspaceAudio(reference, source, signal);
-    return { ...output, result: { ...output.result, ...next, ...(warning && { warning }) } };
+    const { render, result } = workspaceRenderers.get(source.kind);
+    const output = result(source.reference, await render(source, signal));
+    if (source.nextPath) output.next_path = source.nextPath;
+    if (warning) output.warning = warning;
+    return output;
   }
 };

@@ -3,13 +3,9 @@ import { promisify } from 'node:util';
 import { uploadError } from '../multipart.js';
 
 export class WorkspaceMediaError extends Error {}
-export const ignoredChunkWarning = 'This file is not split into chunks. The chunk selection was ignored.';
 
-export function appendOperation(source, operation) {
-  const operations = source.operations ?? [];
-  if (operations.length >= 16) throw new WorkspaceMediaError('This view has 16 edits. Start again from the original attachment path.');
-  return [...operations, operation];
-}
+// A model-facing media part is carried alongside the result fields and omitted from tool-message JSON.
+export const toolMedia = Symbol('tool media');
 
 const run = promisify(execFile);
 const pdfOptions = { timeout: 60_000, windowsHide: true, env: { ...process.env, LC_ALL: 'C' } };

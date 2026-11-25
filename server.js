@@ -6,16 +6,15 @@ import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
 import { createMcpDiscovery } from './tools/mcp-discovery.js';
+import { toolMedia, WorkspaceMediaError } from './tools/media-source.js';
 import { createPresentView } from './tools/present-view.js';
 import { readFileTool } from './tools/read-file.js';
-import { renderAudio } from './tools/workspace-audio.js';
-import { renderImage } from './tools/workspace-image.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
+import { cleanWorkspaceStaging, deleteWorkspace, withWorkspace } from './workspace.js';
 import {
-  attachmentMarkdown, attachmentPresentation, attachmentPreview, deleteWorkspace, withWorkspace,
-  workspaceMedia, workspaceMediaKinds, WorkspaceMediaError
-} from './workspace.js';
+  attachmentMarkdown, attachmentPreview, attachmentResolver, availableMedia, presentAttachments, workspaceMedia, workspaceRenderers
+} from './workspace-media.js';
 
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 8080);
@@ -24,7 +23,7 @@ const pluginDirectory = resolve(process.env.PLUGIN_DIR || 'plugins');
 const pluginWorkspace = process.env.PLUGIN_WORKSPACE ? resolve(process.env.PLUGIN_WORKSPACE) : '';
 const chats = join(data, 'chats');
 const configPath = join(data, 'settings.json');
-const active = new Map();
+const chatOperations = new Map();
 const baseSystemPrompt = `You are an assistant using Serenity, an agentic chat harness.
 Serenity focuses only on essentials, minimizing mental effort for the agent and user.
 
@@ -52,6 +51,7 @@ const defaults = {
   mcp: []
 };
 await mkdir(chats, { recursive: true });
+await cleanWorkspaceStaging();
 const plugins = await discoverPlugins(pluginDirectory, pluginWorkspace);
 const availableTools = [
   ...builtInTools,
@@ -65,6 +65,7 @@ const availableTools = [
   }))
 ];
 
+const toolIds = availableTools.map(tool => tool.id);
 const paletteNames = [defaults.colorPalette, ...[...colorPalettes].filter(name => name !== defaults.colorPalette)];
 const paletteLinks = [...colorPalettes].map(name => `<link rel="stylesheet" href="/palettes/${name}.css">`);
 const paletteOptions = paletteNames.filter(name => colorPalettes.has(name)).map(name => {
@@ -114,7 +115,7 @@ async function save(path, value, signal) {
 const settings = async () => {
   const config = { ...defaults, ...await load(configPath) };
   if (!colorPalettes.has(config.colorPalette)) config.colorPalette = defaults.colorPalette;
-  config.toolDefaults = selectedBuiltIns(config.toolDefaults, config.webSearchByDefault);
+  config.toolDefaults = selectedBuiltIns(config.toolDefaults);
   return config;
 };
 const chatPath = id => join(chats, id + '.json');
@@ -123,7 +124,7 @@ const summary = ({ id, title, model, updated }) => ({ id, title, model, updated 
 function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
   return {
     endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, chatTextSize, colorPalette, followUpBehavior,
-    shareTimezone: shareTimezone === true, webSearchByDefault: toolDefaults.includes('webSearch'),
+    shareTimezone: shareTimezone === true,
     tools: availableTools.map(({ id, label, description, permissions }) => ({
       id, label, description, permissions, enabledByDefault: toolDefaults.includes(id)
     })),
@@ -133,19 +134,11 @@ function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, cha
   };
 }
 
-function selectedBuiltIns(ids, legacyWebSearch, fallback = []) {
-  if (!Array.isArray(ids)) {
-    ids = legacyWebSearch === undefined ? fallback : fallback.filter(id => id !== 'webSearch');
-    if (legacyWebSearch === true) ids = [...ids, 'webSearch'];
-  }
-  return availableTools.flatMap(({ id }) => ids.includes(id) ? [id] : []);
-}
+const selectedBuiltIns = ids => Array.isArray(ids) ? toolIds.filter(id => ids.includes(id)) : [];
 
-function chatTools(selection, config, previous = {}) {
-  const builtIn = selectedBuiltIns(selection.builtIn, selection.webSearch,
-    Array.isArray(previous?.builtIn) ? previous.builtIn : previous?.webSearch === true ? ['webSearch'] : []);
+function chatTools(selection, config) {
   return {
-    builtIn, webSearch: builtIn.includes('webSearch'),
+    builtIn: selectedBuiltIns(selection.builtIn),
     mcp: config.mcp.filter(server => selection.mcp?.includes(server.id)).map(server => server.id)
   };
 }
@@ -155,8 +148,7 @@ function validToolIds(ids) {
 }
 
 function validateTools(selection) {
-  const builtInValid = selection?.builtIn === undefined ? typeof selection?.webSearch === 'boolean' : validToolIds(selection.builtIn);
-  if (!builtInValid || !Array.isArray(selection.mcp) ||
+  if (!validToolIds(selection?.builtIn) || !Array.isArray(selection.mcp) ||
       selection.mcp.length > 12 || selection.mcp.some(id => typeof id !== 'string' || !uuid.test(id))) {
     fail(400, 'Invalid chat tools.');
   }
@@ -307,18 +299,14 @@ function recordUsage(reply, usage, timings) {
   if (Object.keys(stats).length) reply.stats = stats;
 }
 
-async function modelMessage(chatId, { role, content, reasoning, reasoningField, attachments, views }, includeReasoning) {
-  const links = await attachmentMarkdown(chatId, attachments);
+async function modelMessage({ role, content, reasoning, reasoningField, attachments, views }, includeReasoning, resolveAttachment) {
+  const links = await attachmentMarkdown(attachments, resolveAttachment);
   const carry = includeReasoning && reasoning;
   const native = carry && (reasoningField === 'reasoning' || reasoningField === 'reasoning_content');
-  const notes = carry && !native && 'Reasoning from this reply:\n' + reasoning;
+  const notes = carry && reasoningField === 'content' && 'Reasoning from this reply:\n' + reasoning;
   const presented = views?.length && 'Views shown in this reply:\n' + views.map(view => '- ' + view.path).join('\n');
   return { role, content: [notes, content, links, presented].filter(Boolean).join('\n\n'),
     ...(native && { [reasoningField]: reasoning }) };
-}
-
-async function presentAttachments(chatId, attachments) {
-  return await Promise.all(attachments.map(attachment => attachmentPresentation(chatId, attachment)));
 }
 
 function viewURL(chatId, viewId) {
@@ -343,20 +331,24 @@ function sendView(req, res, type, bytes) {
   return res.end(bytes.subarray(start, end + 1));
 }
 
+function beginChatOperation(id, operation, replyConflict) {
+  const current = chatOperations.get(id);
+  if (current) fail(409, current.controller ? replyConflict : 'This conversation is being updated.');
+  chatOperations.set(id, operation);
+  return () => chatOperations.delete(id);
+}
+
 async function generate(res, input, receive = async () => {}) {
   const { id, model, retry } = input;
   if (id && !uuid.test(id)) fail(400, 'Invalid conversation.');
   if (typeof model !== 'string' || !model.trim() || model.length > 500) fail(400, 'Choose a model first.');
   const content = typeof input.content === 'string' ? input.content.trim() : '';
   if (content.length > 100000) fail(400, 'This message is too long.');
-  if (input.images?.length || input.files?.length) fail(400, 'Refresh Serenity to upload files.');
   const chatId = id || randomUUID();
-  if (active.has(chatId)) fail(409, 'A reply is already running for this conversation.');
-  if (editing.has(chatId)) fail(409, 'This conversation is being updated.');
   const controller = new AbortController();
   const replyId = randomUUID();
   const run = { controller, replyId };
-  active.set(chatId, run);
+  const release = beginChatOperation(chatId, run, 'A reply is already running for this conversation.');
   const sessions = [];
   const disconnected = () => controller.abort();
   res.on('close', disconnected);
@@ -384,6 +376,7 @@ async function generate(res, input, receive = async () => {}) {
       if (last?.role !== 'assistant' || !last.issue) fail(409, 'There is no interrupted reply to retry.');
     }
     const reply = { role: 'assistant', model, content: '', reasoning: '', issue: 'Reply interrupted.' };
+    const resolveAttachment = attachmentResolver(chatId);
     const previousEntries = history.messages.flatMap(message => (message.attachments || []).map(attachment => attachment.entry));
     const attachments = await withWorkspace(chatId, previousEntries, receive, controller.signal, async attachments => {
       if (retry && attachments.length) fail(400, 'A reply retry cannot upload files.');
@@ -394,10 +387,11 @@ async function generate(res, input, receive = async () => {}) {
       history.messages.push(reply);
       history.model = model;
       history.updated = new Date().toISOString();
-      const presentation = await presentAttachments(chatId, attachments);
+      const presentation = await presentAttachments(chatId, attachments, resolveAttachment);
       await save(chatPath(chatId), history, controller.signal);
       return presentation;
     });
+    run.history = history;
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'X-Accel-Buffering': 'no' });
     emit('start', { chat: summary(history), tools: history.tools, replyId, attachments });
     const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 12000);
@@ -405,32 +399,26 @@ async function generate(res, input, receive = async () => {}) {
     const signal = AbortSignal.any([controller.signal, deadline]);
     const write = (field, text, reasoningField) => {
       if (typeof text === 'string' && text) {
-        if (reasoningField) reply.reasoningField = reasoningField;
+        if (field === 'reasoning') reply.reasoningField = reasoningField ?? reply.reasoningField ?? 'content';
         reply[field] += text;
         emit(field, { text });
       }
     };
     try {
       const workspaceAttachments = history.messages.flatMap(message => message.attachments || []);
-      const mediaKinds = await workspaceMediaKinds(chatId, workspaceAttachments);
+      const media = await availableMedia(workspaceAttachments, resolveAttachment);
       const enabled = availableTools.filter(({ id, mediaKind }) =>
-        history.tools.builtIn.includes(id) && (!mediaKind || mediaKinds.has(mediaKind)));
+        history.tools.builtIn.includes(id) && (!mediaKind || media.has(mediaKind)));
       const tools = new Map(enabled.flatMap(group => group.tools.map(tool => [tool.name, tool])));
       tools.set(readFileTool.name, {
         ...readFileTool,
-        description: [
-          readFileTool.description,
-          mediaKinds.has('image') && 'Returns an image for an image file or selected PDF page.',
-          mediaKinds.has('audio') && 'Returns one chunk for an audio file.'
-        ].filter(Boolean).join(' ')
+        description: [readFileTool.description, ...Array.from(media.values(), item => item.readDescription)].join(' ')
       });
-      const media = workspaceMedia(chatId, workspaceAttachments, signal);
-      if (mediaKinds.size) {
-        run.attachments = workspaceAttachments;
-        const presentView = createPresentView(mediaKinds, view => {
+      const workspace = workspaceMedia(chatId, workspaceAttachments, signal);
+      if (media.size) {
+        const presentView = createPresentView(media, view => {
           const entry = { ...view, id: randomUUID() };
-          run.views = reply.views ??= [];
-          run.views.push(entry);
+          (reply.views ??= []).push(entry);
           emit('view', { view: { ...entry, url: viewURL(chatId, entry.id) } });
         });
         tools.set(presentView.name, presentView);
@@ -461,8 +449,8 @@ async function generate(res, input, receive = async () => {}) {
         { role: 'system', content: systemPrompt },
         ...await Promise.all(priorMessages
           .filter(message => message.role === 'user' || message.content || message.views?.length ||
-            (message === previousReply && message.reasoning))
-          .map(message => modelMessage(chatId, message, message === previousReply)))
+            (message === previousReply && message.reasoningField && message.reasoning))
+          .map(message => modelMessage(message, message === previousReply, resolveAttachment)))
       ];
       const maxToolRounds = 64;
       for (let round = 0; round <= maxToolRounds; round++) {
@@ -496,15 +484,12 @@ async function generate(res, input, receive = async () => {}) {
               const args = JSON.parse(call.function.arguments || '{}');
               if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid arguments');
               emit('tool', { text: entry.label });
-              const output = await entry.run(args, signal, media);
-              if (entry.supportsMedia) {
-                result = output.result;
-                if (output.contentPart) {
-                  const label = output.contentPart.type === 'image_url' ? 'Image from ' + result.path :
-                    'Media from tool call ' + call.id + '.';
-                  mediaParts.push({ type: 'text', text: label }, output.contentPart);
-                }
-              } else result = output;
+              result = await entry.run(args, signal, workspace);
+              const part = result?.[toolMedia];
+              if (part) {
+                const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
+                mediaParts.push({ type: 'text', text: label }, part);
+              }
             } catch (error) {
               signal.throwIfAborted();
               const message = error instanceof WorkspaceMediaError ? error.message :
@@ -533,13 +518,12 @@ async function generate(res, input, receive = async () => {}) {
     emit('done', { issue: reply.issue, stats: reply.stats });
     res.end();
   } finally {
-    active.delete(chatId);
+    release();
     res.off('close', disconnected);
     await Promise.all(sessions.map(session => session.close()));
   }
 }
 
-const editing = new Set();
 createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -593,7 +577,7 @@ createServer(async (req, res) => {
       const token = typeof input.token === 'string' ? input.token.trim() :
         endpoint === endpointUrl(current.endpoint) ? current.token : '';
       if (input.toolDefaults !== undefined && !validToolIds(input.toolDefaults)) fail(400, 'Invalid tool defaults.');
-      const toolDefaults = selectedBuiltIns(input.toolDefaults, input.webSearchByDefault ?? undefined, current.toolDefaults);
+      const toolDefaults = selectedBuiltIns(input.toolDefaults ?? current.toolDefaults);
       const next = { endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolDefaults, mcp };
       await save(configPath, next);
       return send(res, 200, publicSettings(next));
@@ -645,39 +629,31 @@ createServer(async (req, res) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) fail(400, 'Invalid message.');
       return await generate(res, input);
     }
-    const preview = /^\/api\/chats\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname);
-    if (method === 'GET' && preview && uuid.test(preview[1]) && uuid.test(preview[2])) {
-      const [, chatId, attachmentId] = preview;
+    const attachmentRoute = /^\/api\/chats\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname);
+    if (method === 'GET' && attachmentRoute && uuid.test(attachmentRoute[1]) && uuid.test(attachmentRoute[2])) {
+      const [, chatId, attachmentId] = attachmentRoute;
       const chat = await load(chatPath(chatId));
       const attachment = chat?.messages.flatMap(message => message.attachments || [])
         .find(attachment => attachment.id === attachmentId);
-      const image = await attachmentPreview(chatId, attachment);
-      if (!image) fail(404, 'Attachment unavailable.');
-      res.writeHead(200, { 'Content-Type': 'image/webp', 'Content-Length': image.length });
-      return res.end(image);
+      const preview = await attachmentPreview(chatId, attachment);
+      if (!preview) fail(404, 'Attachment unavailable.');
+      res.writeHead(200, { 'Content-Type': preview.contentType, 'Content-Length': preview.data.length });
+      return res.end(preview.data);
     }
     const viewRoute = /^\/api\/chats\/([^/]+)\/views\/([^/]+)$/.exec(pathname);
     if (method === 'GET' && viewRoute && uuid.test(viewRoute[1]) && uuid.test(viewRoute[2])) {
       const [, chatId, viewId] = viewRoute;
-      const run = active.get(chatId);
-      let view = run?.views?.find(view => view.id === viewId);
-      let attachments = run?.attachments;
-      if (!view) {
-        const chat = await load(chatPath(chatId));
-        view = chat?.messages.flatMap(message => message.views || []).find(view => view.id === viewId);
-        if (!view) fail(404, 'View unavailable.');
-        attachments = chat.messages.flatMap(message => message.attachments || []);
-      }
+      const chat = chatOperations.get(chatId)?.history ?? await load(chatPath(chatId));
+      const view = chat?.messages.flatMap(message => message.views || []).find(view => view.id === viewId);
+      if (!view) fail(404, 'View unavailable.');
+      const attachments = chat.messages.flatMap(message => message.attachments || []);
       const controller = new AbortController();
       res.once('close', () => controller.abort());
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]);
       try {
         const source = await workspaceMedia(chatId, attachments, signal).input(view.path, { kind: view.kind });
-        if (source.kind === 'image') {
-          return sendView(req, res, 'image/webp', (await renderImage(source, signal)).data);
-        }
-        const { data, format } = await renderAudio(source, signal);
-        return sendView(req, res, format === 'wav' ? 'audio/wav' : 'audio/mpeg', data);
+        const { data, contentType } = await workspaceRenderers.get(source.kind).render(source, signal);
+        return sendView(req, res, contentType, data);
       } catch (error) {
         if (error instanceof WorkspaceMediaError || error.code === 'ENOENT') fail(404, 'View unavailable.');
         throw error;
@@ -687,26 +663,24 @@ createServer(async (req, res) => {
     if (match && uuid.test(match[1])) {
       const [, id, action] = match;
       if (action === 'stop' && method === 'POST') {
-        const run = active.get(id);
-        const replyId = searchParams.get('reply');
-        if (run && (replyId === null || replyId === run.replyId)) run.controller.abort();
+        const run = chatOperations.get(id);
+        if (searchParams.get('reply') === run?.replyId) run.controller.abort();
         return send(res, 200, {});
       }
       if (!action && method === 'GET') {
         const chat = await load(chatPath(id));
         if (!chat) fail(404, 'Conversation not found.');
         chat.tools = chatTools(chat.tools || {}, await settings());
+        const resolveAttachment = attachmentResolver(id);
         await Promise.all(chat.messages.map(async message => {
-          if (message.attachments) message.attachments = await presentAttachments(id, message.attachments);
+          if (message.attachments) message.attachments = await presentAttachments(id, message.attachments, resolveAttachment);
           if (message.views) message.views = message.views.map(view => ({ ...view, url: viewURL(id, view.id) }));
         }));
         return send(res, 200, chat);
       }
       if ((!action && method === 'DELETE') || (action === 'tools' && method === 'PUT')) {
         const selection = action ? validateTools(await readJson(req)) : null;
-        if (active.has(id)) fail(409, 'Wait for the reply to finish or stop it first.');
-        if (editing.has(id)) fail(409, 'This conversation is being updated.');
-        editing.add(id);
+        const release = beginChatOperation(id, {}, 'Wait for the reply to finish or stop it first.');
         try {
           if (!selection) {
             await deleteWorkspace(id);
@@ -715,11 +689,11 @@ createServer(async (req, res) => {
           }
           const chat = await load(chatPath(id));
           if (!chat) fail(404, 'Conversation not found.');
-          chat.tools = chatTools(selection, await settings(), chat.tools);
+          chat.tools = chatTools(selection, await settings());
           await save(chatPath(id), chat);
           return send(res, 200, chat.tools);
         } finally {
-          editing.delete(id);
+          release();
         }
       }
     }

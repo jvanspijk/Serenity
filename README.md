@@ -57,9 +57,9 @@ node --test
 
 ## Data and plugins
 
-Chats and settings are stored in the Docker volume, or in `./data` when running from source. Settings can include API keys and MCP tokens; protect the data and its backups. Serenity has no authentication, so keep it on localhost or behind an authenticated reverse proxy.
+Chats, settings, and conversation workspaces are stored in the Docker volume, or in `./data` when running from source. Settings can include API keys and MCP tokens; protect the data and its backups. Serenity has no authentication, so keep it on localhost or behind an authenticated reverse proxy.
 
-Attachments use a temporary workspace with a 250 MiB limit per conversation. Serenity stores the original upload bytes and renders previews, PDF pages, and audio chunks on demand. Deleting a conversation removes its workspace. Temp cleanup or container replacement can remove attachments from an otherwise preserved transcript.
+Attachments use a persistent workspace with a 250 MiB limit per conversation. Serenity stores the original upload bytes and renders previews, PDF pages, and audio chunks on demand. Deleting a conversation removes its workspace. `DATA_DIR` controls the storage location when running from source; `SERENITY_WORKSPACE_DIR` can set a separate workspace location.
 
 Enable **Image tools** or **Audio tools** in the composer’s tool menu, or set their defaults in **Settings**. Crop and rotate accept a PDF attachment path and an optional page number in `chunk`. Image and audio edits return the rendered media to the model and a stable view path such as `/media/view-1.webp`. Serenity stores the recipe for each view and renders it from the original bytes. Use any view path to continue editing from that state, or the original path to start over. Clips sent to the model stay within 28 seconds. Reading media requires a model and endpoint that support it alongside tool calls.
 
