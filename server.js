@@ -9,7 +9,6 @@ import { createMcpDiscovery } from './tools/mcp-discovery.js';
 import { toolMedia, WorkspaceMediaError } from './tools/media-source.js';
 import { createShowView } from './tools/present-view.js';
 import { readFileTool } from './tools/read-file.js';
-import { toolMediaHistory, toolMediaParts } from './tools/tool-history.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
 import { cleanWorkspaceStaging, deleteWorkspace, withWorkspace } from './workspace.js';
@@ -400,7 +399,6 @@ async function generate(res, input, receive = async () => {}) {
     const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 12000);
     const deadline = AbortSignal.timeout(15 * 60 * 1000);
     const signal = AbortSignal.any([controller.signal, deadline]);
-    const mediaHistory = toolMediaHistory(chatId, signal);
     const write = (field, text, reasoningField) => {
       if (typeof text === 'string' && text) {
         if (field === 'reasoning') reply.reasoningField = reasoningField ?? reply.reasoningField ?? 'content';
@@ -451,13 +449,7 @@ async function generate(res, input, receive = async () => {}) {
       const previousReply = priorMessages.findLast(message => message.role === 'assistant');
       const messages = [{ role: 'system', content: systemPrompt }];
       for (const message of priorMessages) {
-        for (const round of message.toolRounds ?? []) {
-          messages.push(...round.messages);
-          if (round.media.length) {
-            const content = (await Promise.all(round.media.map(mediaHistory.restore))).flat();
-            messages.push({ role: 'user', content });
-          }
-        }
+        messages.push(...(message.toolMessages ?? []));
         const content = message.role === 'user' ? message.content : message.finalContent;
         const includeReasoning = message === previousReply && Boolean(message.reasoningField && message.reasoning);
         if (message.role === 'user' || content || message.views?.length || includeReasoning) {
@@ -484,10 +476,7 @@ async function generate(res, input, receive = async () => {}) {
           break;
         }
         if (round === maxToolRounds) fail(502, 'The model exceeded the tool call limit.');
-        const toolRound = {
-          messages: [{ role: 'assistant', content: answer || null, tool_calls: calls }],
-          media: []
-        };
+        const toolMessages = [{ role: 'assistant', content: answer || null, tool_calls: calls }];
         const mediaParts = [];
         for (const call of calls) {
           signal.throwIfAborted();
@@ -517,15 +506,13 @@ async function generate(res, input, receive = async () => {}) {
           const part = result?.[toolMedia];
           if (part) {
             const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
-            const reference = await mediaHistory.save(part, label);
-            toolRound.media.push(reference);
-            mediaParts.push(...toolMediaParts(reference, part.data));
+            mediaParts.push({ type: 'text', text: label }, part);
           }
-          toolRound.messages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
+          toolMessages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
         }
-        (reply.toolRounds ??= []).push(toolRound);
+        (reply.toolMessages ??= []).push(...toolMessages);
         await save(chatPath(chatId), history);
-        messages.push(...toolRound.messages);
+        messages.push(...toolMessages);
         // Chat Completions accepts image and audio parts in user messages, after all tool replies.
         if (mediaParts.length) messages.push({ role: 'user', content: mediaParts });
       }
@@ -535,9 +522,6 @@ async function generate(res, input, receive = async () => {}) {
     } finally {
       clearInterval(heartbeat);
       await save(chatPath(chatId), history);
-      if (retry || reply.issue) {
-        await mediaHistory.prune(history.messages).catch(error => console.warn('Could not clean up tool media:', error));
-      }
     }
     emit('done', { issue: reply.issue, stats: reply.stats });
     res.end();
@@ -698,7 +682,7 @@ createServer(async (req, res) => {
         const resolveAttachment = attachmentResolver(id);
         await Promise.all(chat.messages.map(async message => {
           delete message.finalContent;
-          delete message.toolRounds;
+          delete message.toolMessages;
           if (message.attachments) message.attachments = await presentAttachments(id, message.attachments, resolveAttachment);
           if (message.views) message.views = message.views.map(view => ({ ...view, url: viewURL(id, view.id) }));
         }));

@@ -67,7 +67,7 @@ export async function renderAudio(source, signal) {
 }
 
 export function audioResult(path, { seconds, data, format }) {
-  return { path, seconds, [toolMedia]: { type: 'input_audio', format, data } };
+  return { path, seconds, [toolMedia]: { type: 'input_audio', input_audio: { format, data: data.toString('base64') } } };
 }
 
 export const audioTools = [
