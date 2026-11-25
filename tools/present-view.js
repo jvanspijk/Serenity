@@ -1,12 +1,13 @@
 import { WorkspaceMediaError } from './media-source.js';
 import { workspaceRenderers } from '../workspace-media.js';
 
-export function createPresentView(media, present) {
+export function createShowView(media, present) {
   const types = Array.from(media.values(), item => item.presentLabel).join(' or ');
   return {
-    name: 'present_view',
-    label: 'Present view',
-    description: 'Shows ' + types + ' inline in the chat for the user. Accepts an original attachment or an edited workspace view.',
+    name: 'show_view',
+    label: 'Show view',
+    description: 'Displays ' + types + ' inline in the chat for the user and returns only a confirmation. ' +
+      'Accepts an original attachment or an edited workspace view. Use read_file to inspect the media yourself.',
     parameters: {
       type: 'object',
       properties: {

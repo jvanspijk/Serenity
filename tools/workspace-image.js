@@ -86,7 +86,7 @@ export async function renderImage(source, signal) {
 
 export function imageResult(path, { data, contentType, info: { width, height } }) {
   return { path, width, height,
-    [toolMedia]: { type: 'image_url', image_url: { url: 'data:' + contentType + ';base64,' + data.toString('base64') } } };
+    [toolMedia]: { type: 'image_url', format: contentType, data } };
 }
 
 export const imageTools = [

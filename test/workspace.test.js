@@ -193,7 +193,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const attachments = [['Photo.jpg', photo], ['Data?.bin', binary], ['data?.BIN', binary],
     ['Note.txt', 'Attachment bytes must never reach inference\nSecond line'], ['archive.zip', binary], ['work (draft.bin', binary]];
   const upload = await start(await send({ id: first, content: 'Visible message' }, attachments));
-  assert.deepEqual(toolNames(), ['image_crop', 'image_rotate', 'read_file', 'present_view']);
+  assert.deepEqual(toolNames(), ['image_crop', 'image_rotate', 'read_file', 'show_view']);
   const imagePrompt = prompts.at(-1)[0].content;
   assert.match(imagePrompt, /image_crop.*Crops and zooms/);
   assert.doesNotMatch(imagePrompt, /audio/i);
@@ -455,7 +455,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   assert.equal(declarations.filter(tool => tool.function.name === 'read_file').length, 1);
   assert.ok(declarations.some(tool => tool.function.name === 'image_rotate'));
   assert.equal(declarations.some(tool => tool.function.name === 'audio_transform'), hasAudio);
-  assert.ok(prompts.at(-4).every(message => !Array.isArray(message.content)));
+  assert.equal(prompts.at(-4).at(-1).content, 'Inspect edited media');
   for (const messages of prompts.slice(-3)) {
     assert.ok(messages.at(-1).content.some(part => part.type === 'image_url'));
   }
@@ -567,7 +567,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     ['Paged.txt', paged.join('\r\n')], ['Wide.txt', wide.join('\n')]
   ]));
   const checked = prompts.at(-1);
-  assert.deepEqual(declarations.map(tool => tool.function.name), ['read_file', 'present_view']);
+  assert.deepEqual(declarations.map(tool => tool.function.name), ['read_file', 'show_view']);
   assert.deepEqual(Object.keys(declarations[0].function.parameters.properties), ['path', 'chunk', 'offset', 'limit']);
   assert.deepEqual(declarations[0].function.parameters.required, ['path']);
   assert.equal(result(checked, 'read_image').width, 160);
@@ -608,11 +608,11 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   toolRounds.push(() => {
     viewOnlyNext = true;
     return [
-      call('present_view', { path: rotated.path, label: 'Rotated crop' }, 'present_image'),
-      call('present_view', { path: '/files/Note.txt' }, 'present_text'),
+      call('show_view', { path: rotated.path, label: 'Rotated crop' }, 'present_image'),
+      call('show_view', { path: '/files/Note.txt' }, 'present_text'),
       ...(hasAudio ? [
-        call('present_view', { path: result(inspected, 'trim_audio_view').path }, 'present_edited_audio'),
-        call('present_view', { path: audioPath, chunk: 2 }, 'present_original_audio')
+        call('show_view', { path: result(inspected, 'trim_audio_view').path }, 'present_edited_audio'),
+        call('show_view', { path: audioPath, chunk: 2 }, 'present_original_audio')
       ] : [])
     ];
   });
@@ -638,7 +638,7 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
   const viewResults = prompts.at(-1);
   assert.deepEqual(result(viewResults, 'present_image'), { path: rotated.path, presented: true });
   assert.equal(result(viewResults, 'present_text').isError, true);
-  assert.ok(viewResults.every(message => !Array.isArray(message.content)));
+  assert.equal(viewResults.at(-1).role, 'tool');
   assert.deepEqual(streamedImage, Buffer.from(imagePart.image_url.url.split(',')[1], 'base64'));
   const reopened = await (await api('chats/' + first)).json();
   assert.deepEqual(reopened.messages.at(-1).views, presented);
@@ -748,13 +748,12 @@ test('conversation workspace lifecycle, uploads and model links', async t => {
     { role: 'assistant', content: '', reasoning },
     { role: 'user', content: 'Which crop looked best?' }
   ]);
-  assert.ok(followUp.every(message => !message.tool_calls && message.role !== 'tool' && typeof message.content === 'string'));
   reasoningField = undefined;
   reasoningNext = 'Thinking from an unstructured response.';
   await start(await send({ id: limited.chat.id, content: 'How certain are you?' }));
   const nextTurn = prompts.at(-1);
   assert.equal(prompts.length, beforeFollowUp + 2);
-  assert.ok(nextTurn.every(message => !message.content.includes(reasoning) && message.reasoning === undefined));
+  assert.ok(nextTurn.every(message => !message.content?.includes(reasoning) && message.reasoning === undefined));
   assert.deepEqual(nextTurn.slice(-2), [
     { role: 'assistant', content: 'OK', reasoning_content: followUpReasoning },
     { role: 'user', content: 'How certain are you?' }

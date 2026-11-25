@@ -7,8 +7,9 @@ import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
 import { createMcpDiscovery } from './tools/mcp-discovery.js';
 import { toolMedia, WorkspaceMediaError } from './tools/media-source.js';
-import { createPresentView } from './tools/present-view.js';
+import { createShowView } from './tools/present-view.js';
 import { readFileTool } from './tools/read-file.js';
+import { toolMediaHistory, toolMediaParts } from './tools/tool-history.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
 import { cleanWorkspaceStaging, deleteWorkspace, withWorkspace } from './workspace.js';
@@ -30,6 +31,8 @@ Serenity focuses only on essentials, minimizing mental effort for the agent and 
 # Working Style
 
 - Complete all explicit and implied user requirements until writing a final response.
+- Own the full task end to end using your available tools rather than stopping partway or asking the user to do work your tools can handle.
+- Ground every stated action, observation, and result strictly in what occurred in this conversation and the actual outputs returned by your tools.
 - If an intermediary step fails or provides minimal data, alter strategy instead of repeating the same action.
 - Only report that something cannot be fulfilled after all reasonable and viable attempts have been exhausted.`;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -375,7 +378,7 @@ async function generate(res, input, receive = async () => {}) {
       const last = history.messages.at(-1);
       if (last?.role !== 'assistant' || !last.issue) fail(409, 'There is no interrupted reply to retry.');
     }
-    const reply = { role: 'assistant', model, content: '', reasoning: '', issue: 'Reply interrupted.' };
+    const reply = { role: 'assistant', model, content: '', finalContent: '', reasoning: '', issue: 'Reply interrupted.' };
     const resolveAttachment = attachmentResolver(chatId);
     const previousEntries = history.messages.flatMap(message => (message.attachments || []).map(attachment => attachment.entry));
     const attachments = await withWorkspace(chatId, previousEntries, receive, controller.signal, async attachments => {
@@ -397,6 +400,7 @@ async function generate(res, input, receive = async () => {}) {
     const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, 12000);
     const deadline = AbortSignal.timeout(15 * 60 * 1000);
     const signal = AbortSignal.any([controller.signal, deadline]);
+    const mediaHistory = toolMediaHistory(chatId, signal);
     const write = (field, text, reasoningField) => {
       if (typeof text === 'string' && text) {
         if (field === 'reasoning') reply.reasoningField = reasoningField ?? reply.reasoningField ?? 'content';
@@ -416,12 +420,12 @@ async function generate(res, input, receive = async () => {}) {
       });
       const workspace = workspaceMedia(chatId, workspaceAttachments, signal);
       if (media.size) {
-        const presentView = createPresentView(media, view => {
+        const showView = createShowView(media, view => {
           const entry = { ...view, id: randomUUID() };
           (reply.views ??= []).push(entry);
           emit('view', { view: { ...entry, url: viewURL(chatId, entry.id) } });
         });
-        tools.set(presentView.name, presentView);
+        tools.set(showView.name, showView);
       }
       const servers = config.mcp.filter(server => history.tools.mcp.includes(server.id));
       const connections = await Promise.all(servers.map(async server => {
@@ -445,13 +449,21 @@ async function generate(res, input, receive = async () => {}) {
       ].filter(Boolean).join('\n\n');
       const priorMessages = history.messages.slice(0, -1);
       const previousReply = priorMessages.findLast(message => message.role === 'assistant');
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        ...await Promise.all(priorMessages
-          .filter(message => message.role === 'user' || message.content || message.views?.length ||
-            (message === previousReply && message.reasoningField && message.reasoning))
-          .map(message => modelMessage(message, message === previousReply, resolveAttachment)))
-      ];
+      const messages = [{ role: 'system', content: systemPrompt }];
+      for (const message of priorMessages) {
+        for (const round of message.toolRounds ?? []) {
+          messages.push(...round.messages);
+          if (round.media.length) {
+            const content = (await Promise.all(round.media.map(mediaHistory.restore))).flat();
+            messages.push({ role: 'user', content });
+          }
+        }
+        const content = message.role === 'user' ? message.content : message.finalContent;
+        const includeReasoning = message === previousReply && Boolean(message.reasoningField && message.reasoning);
+        if (message.role === 'user' || content || message.views?.length || includeReasoning) {
+          messages.push(await modelMessage({ ...message, content }, includeReasoning, resolveAttachment));
+        }
+      }
       const maxToolRounds = 64;
       for (let round = 0; round <= maxToolRounds; round++) {
         const roundTools = round < maxToolRounds ? new Map(tools) : new Map();
@@ -467,11 +479,15 @@ async function generate(res, input, receive = async () => {}) {
         signal.throwIfAborted();
         if (!calls.length) {
           if (!reply.content && !reply.views?.length) fail(502, 'The model returned no answer.');
+          reply.finalContent = answer;
           delete reply.issue;
           break;
         }
         if (round === maxToolRounds) fail(502, 'The model exceeded the tool call limit.');
-        messages.push({ role: 'assistant', content: answer || null, tool_calls: calls });
+        const toolRound = {
+          messages: [{ role: 'assistant', content: answer || null, tool_calls: calls }],
+          media: []
+        };
         const mediaParts = [];
         for (const call of calls) {
           signal.throwIfAborted();
@@ -485,11 +501,6 @@ async function generate(res, input, receive = async () => {}) {
               if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid arguments');
               emit('tool', { text: entry.label });
               result = await entry.run(args, signal, workspace);
-              const part = result?.[toolMedia];
-              if (part) {
-                const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
-                mediaParts.push({ type: 'text', text: label }, part);
-              }
             } catch (error) {
               signal.throwIfAborted();
               const message = error instanceof WorkspaceMediaError ? error.message :
@@ -503,8 +514,18 @@ async function generate(res, input, receive = async () => {}) {
               tool: call.function.name, arguments: call.function.arguments,
               error: failure ?? result.error ?? 'Tool returned an error.' }));
           }
-          messages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
+          const part = result?.[toolMedia];
+          if (part) {
+            const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
+            const reference = await mediaHistory.save(part, label);
+            toolRound.media.push(reference);
+            mediaParts.push(...toolMediaParts(reference, part.data));
+          }
+          toolRound.messages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
         }
+        (reply.toolRounds ??= []).push(toolRound);
+        await save(chatPath(chatId), history);
+        messages.push(...toolRound.messages);
         // Chat Completions accepts image and audio parts in user messages, after all tool replies.
         if (mediaParts.length) messages.push({ role: 'user', content: mediaParts });
       }
@@ -514,6 +535,9 @@ async function generate(res, input, receive = async () => {}) {
     } finally {
       clearInterval(heartbeat);
       await save(chatPath(chatId), history);
+      if (retry || reply.issue) {
+        await mediaHistory.prune(history.messages).catch(error => console.warn('Could not clean up tool media:', error));
+      }
     }
     emit('done', { issue: reply.issue, stats: reply.stats });
     res.end();
@@ -673,6 +697,8 @@ createServer(async (req, res) => {
         chat.tools = chatTools(chat.tools || {}, await settings());
         const resolveAttachment = attachmentResolver(id);
         await Promise.all(chat.messages.map(async message => {
+          delete message.finalContent;
+          delete message.toolRounds;
           if (message.attachments) message.attachments = await presentAttachments(id, message.attachments, resolveAttachment);
           if (message.views) message.views = message.views.map(view => ({ ...view, url: viewURL(id, view.id) }));
         }));
