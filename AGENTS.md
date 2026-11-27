@@ -21,6 +21,8 @@ When adding or changing UI elements, always use professional guidelines for spac
 - Keep one source of truth. Derive related state from it where practical.
 - Save authoritative state before updating derived state. Make the update safe to repeat.
 - Use one rule for normal operations, retries, and recovery when possible. Add a special case only when a concrete requirement needs it.
+- When several edge cases need separate checks, look for a simpler design that handles them by default. Use native platform behavior or a shared rule where it fits.
+- If a refactor would remove checks, state, or code paths while preserving intended behavior, consider it. Verify the affected flows if you make the change.
 
 ## Compatibility and regression tests
 
