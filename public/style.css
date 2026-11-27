@@ -198,6 +198,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: r
 .pending { font-size: .875rem; color: var(--dim); }
 .reply-issue { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--warn); font-size: .875rem; margin-top: 8px; }
 .reply-issue button, .model-notice button { padding: 0; text-decoration: underline; text-underline-offset: 3px; font-size: inherit; color: var(--text); }
+.message:not(:last-child) .reply-issue button { display: none; }
 .copy { margin: 7px 0 0 -6px; width: 30px; height: 29px; }
 .message-actions { display: flex; justify-content: flex-end; gap: 2px; margin-top: 7px; }
 .message-actions .icon { margin: 0; width: 30px; height: 29px; }

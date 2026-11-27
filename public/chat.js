@@ -312,7 +312,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     }
   }
 
-  function makeMessage(message, options = {}) {
+  function makeMessage(message, streaming = false) {
     const article = element('article', 'message ' + message.role);
     const copyLabel = message.role === 'user' ? 'Copy message' : 'Copy reply';
     const copy = iconButton('copy', copyLabel, 'icon copy');
@@ -421,19 +421,16 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
       issue.hidden = streaming || !message.issue;
       copy.hidden = streaming || !message.content;
       if (!issue.hidden) {
-        issue.replaceChildren(element('span', '', message.issue));
-        if (options.canRetry) {
-          const retry = element('button', '', 'Retry');
-          retry.type = 'button';
-          retry.addEventListener('click', () => {
-            const model = $('models').value;
-            if (!chatLocked() && state.modelState === 'online' && model) submit({ model }, { retry: true });
-          });
-          issue.append(retry);
-        }
+        const retry = element('button', '', 'Retry');
+        retry.type = 'button';
+        retry.addEventListener('click', () => {
+          const model = $('models').value;
+          if (!chatLocked() && state.modelState === 'online' && model) submit({ model }, { retry: true });
+        });
+        issue.replaceChildren(element('span', '', message.issue), retry);
       }
     }
-    update(Boolean(options.streaming));
+    update(streaming);
     return { article, update };
   }
 
@@ -460,11 +457,14 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     $('token-rate').textContent = totals.generationMs ? tokenRate.format(totals.timedTokens * 1000 / totals.generationMs) : '—';
   }
 
-  function renderThread() {
+  function renderThread(retained = 0, activeReply) {
     const messages = state.chat?.messages || [];
-    $('thread').hidden = !messages.length;
-    $('thread').replaceChildren(...messages.map((message, i) =>
-      makeMessage(message, { canRetry: i === messages.length - 1 }).article));
+    const thread = $('thread');
+    thread.hidden = !messages.length;
+    while (thread.childElementCount > retained) thread.lastElementChild.remove();
+    for (let i = retained; i < messages.length; i++) {
+      thread.append((i === messages.length - 1 && activeReply) || makeMessage(messages[i]).article);
+    }
     renderStats();
     renderHistory();
     renderControls();
@@ -687,7 +687,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     const { model, content = '', attachments = [] } = message;
     const id = state.chat?.id;
     const reply = { role: 'assistant', model, content: '', reasoning: '' };
-    const assistant = makeMessage(reply, { streaming: true, canRetry: true });
+    const assistant = makeMessage(reply, true);
     let started = false;
     let finished = false;
     let updateTimer;
@@ -736,31 +736,19 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
           run.replyId = event.replyId;
           if (run.stopRequested) stopStream(run);
           const messages = state.chat?.messages || [];
-          const thread = $('thread');
+          const retained = edit?.index ?? (messages.length - Number(retry));
+          messages.length = retained;
           if (edit) {
-            messages.length = edit.index;
-            for (const article of Array.from(thread.children).slice(edit.index)) article.remove();
             editDialog.close();
             $('prompt').focus({ preventScroll: true });
           }
-          if (retry) messages.pop();
-          else messages.push({ role: 'user', content, attachments: event.attachments });
+          if (!retry) messages.push({ role: 'user', content, attachments: event.attachments });
           messages.push(reply);
           state.chat = { ...event.chat, messages, tools: event.tools };
           syncTools();
           state.list = [event.chat, ...state.list.filter(chat => chat.id !== event.chat.id)];
           history.replaceState(null, '', '#' + state.chat.id);
-          thread.hidden = false;
-          if (retry) thread.lastElementChild?.remove();
-          else {
-            thread.lastElementChild?.querySelector('.reply-issue button')?.remove();
-            thread.append(makeMessage(messages.at(-2)).article);
-          }
-          thread.append(assistant.article);
-          renderStats();
-          renderHistory();
-          renderControls();
-          scrollDown();
+          renderThread(retained, assistant.article);
         } else if (event.type === 'content' || event.type === 'reasoning') {
           const firstContent = event.type === 'content' && !reply.content && event.text;
           reply[event.type] += event.text;
