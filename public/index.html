@@ -81,70 +81,7 @@
     <div class="drop-layer" id="drop-layer" hidden><svg><use href="/icons.svg#image"/></svg>Drop files to attach</div>
   </main>
 
-  <dialog id="settings" aria-labelledby="settings-title">
-    <form id="settings-form">
-      <div class="dialog-heading">
-        <h2 id="settings-title">Settings</h2>
-        <button type="button" class="icon" data-close-settings title="Close settings" aria-label="Close settings"><svg><use href="/icons.svg#close"/></svg></button>
-      </div>
-      <div class="settings-body">
-        <section class="settings-section">
-          <label>Color palette
-            <select id="color-palette">
-              <!-- Palette options -->
-            </select>
-          </label>
-          <label>Chat text size
-            <select id="chat-text-size">
-              <option value="small">Small</option>
-              <option value="medium" selected>Medium</option>
-              <option value="large">Large</option>
-            </select>
-          </label>
-        </section>
-        <section class="settings-section">
-          <h3>Inference server</h3>
-          <label>OpenAI-compatible URL<input required type="url" id="endpoint" placeholder="http://host.docker.internal:11434/v1" spellcheck="false"></label>
-          <label>API key<input type="password" id="api-key" placeholder="Optional" autocomplete="off"></label>
-          <label class="toggle-row">Show inference statistics<input class="toggle" type="checkbox" id="show-inference-stats"></label>
-        </section>
-        <section class="settings-section">
-          <label>System prompt<textarea id="system-prompt" rows="4" maxlength="100000"></textarea></label>
-        </section>
-        <section class="settings-section">
-          <label>Follow-up behavior
-            <select id="follow-up-behavior">
-              <option value="queue">Enter queues, Ctrl+Enter interrupts</option>
-              <option value="interrupt">Enter interrupts, Ctrl+Enter queues</option>
-            </select>
-          </label>
-        </section>
-        <section class="settings-section">
-          <h3>Privacy</h3>
-          <label class="toggle-row">Share local timezone<input class="toggle" type="checkbox" id="share-timezone"></label>
-        </section>
-        <section class="settings-section">
-          <h3>Tools</h3>
-          <label>Tool call limit per reply
-            <input id="tool-call-limit" type="text" inputmode="numeric" pattern="[0-9]+" required aria-describedby="tool-call-limit-help">
-            <span class="tool-setting-description" id="tool-call-limit-help">Use 0 to disable tool calls.</span>
-          </label>
-          <h4 class="tool-defaults-heading">Enabled by default</h4>
-          <div class="tool-settings" id="tool-defaults"></div>
-        </section>
-        <section class="settings-section">
-          <div class="section-heading">
-            <h3>MCP connections</h3>
-            <button type="button" class="icon" id="check-mcp" title="Check saved connections" aria-label="Check saved connections"><svg><use href="/icons.svg#refresh"/></svg></button>
-          </div>
-          <div id="connections"></div>
-          <button type="button" class="secondary" id="add-mcp"><svg><use href="/icons.svg#plus"/></svg>Add connection</button>
-        </section>
-        <p id="settings-error" role="alert"></p>
-      </div>
-      <div class="dialog-actions"><button type="button" class="secondary" data-close-settings>Cancel</button><button class="primary" id="save-settings">Save</button></div>
-    </form>
-  </dialog>
+  <!-- Settings dialog -->
 
   <dialog id="edit-message" aria-labelledby="edit-message-title" aria-describedby="edit-message-description">
     <form id="edit-message-form">
