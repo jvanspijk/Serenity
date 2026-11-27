@@ -1011,6 +1011,7 @@ async function openSettings() {
     $('color-palette').value = config.colorPalette;
     $('follow-up-behavior').value = config.followUpBehavior;
     $('share-timezone').checked = config.shareTimezone;
+    $('tool-call-limit').value = config.toolCallLimit;
     $('tool-defaults').replaceChildren(...config.tools.map(({ id, label, description, permissions, enabledByDefault }) => {
       const { row, input } = toggleRow('', enabledByDefault);
       const name = element('span', 'tool-setting-name', label);
@@ -1056,6 +1057,7 @@ $('settings-form').addEventListener('submit', async event => {
       colorPalette: $('color-palette').value,
       followUpBehavior: $('follow-up-behavior').value,
       shareTimezone: $('share-timezone').checked,
+      toolCallLimit: $('tool-call-limit').value,
       toolDefaults: Array.from($('tool-defaults').querySelectorAll('input:checked'), input => input.value),
       mcp: [...connectionFields.values()].map(({ id, name, url, key, defaultToggle }) => ({
         id, name: name.value, url: url.value.trim(), enabledByDefault: defaultToggle.checked,

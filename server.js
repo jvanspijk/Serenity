@@ -49,6 +49,7 @@ const defaults = {
   colorPalette: 'nordic',
   followUpBehavior: 'queue',
   shareTimezone: false,
+  toolCallLimit: '64',
   mcp: []
 };
 await mkdir(chats, { recursive: true });
@@ -159,10 +160,11 @@ const settings = async () => {
 const chatPath = id => join(chats, id + '.json');
 const summary = ({ id, title, model, updated }) => ({ id, title, model, updated });
 
-function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolDefaults, mcp }) {
+function publicSettings({ endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolCallLimit, toolDefaults, mcp }) {
   return {
     endpoint, hasToken: Boolean(token), systemPrompt, showInferenceStats: showInferenceStats === true, chatTextSize, colorPalette, followUpBehavior,
     shareTimezone: shareTimezone === true,
+    toolCallLimit,
     tools: availableTools.map(({ id, label, description, permissions }) => ({
       id, label, description, permissions, enabledByDefault: toolDefaults.includes(id)
     })),
@@ -475,10 +477,11 @@ async function generate(res, input, receive = async () => {}) {
       }
     };
     try {
+      let remainingToolCalls = BigInt(config.toolCallLimit);
       const workspaceAttachments = history.messages.flatMap(message => message.attachments || []);
       const media = await availableMedia(workspaceAttachments, resolveAttachment);
       const enabled = availableTools.filter(({ id, mediaKind }) =>
-        history.tools.builtIn.includes(id) && (!mediaKind || media.has(mediaKind)));
+        remainingToolCalls > 0n && history.tools.builtIn.includes(id) && (!mediaKind || media.has(mediaKind)));
       const tools = new Map(enabled.flatMap(group => group.tools.map(tool => [tool.name, tool])));
       tools.set(readFileTool.name, {
         ...readFileTool,
@@ -493,7 +496,7 @@ async function generate(res, input, receive = async () => {}) {
         });
         tools.set(showView.name, showView);
       }
-      const servers = config.mcp.filter(server => history.tools.mcp.includes(server.id));
+      const servers = config.mcp.filter(server => remainingToolCalls > 0n && history.tools.mcp.includes(server.id));
       const connections = await Promise.all(servers.map(async server => {
         try {
           const session = await connectMcp(server, signal);
@@ -532,9 +535,9 @@ async function generate(res, input, receive = async () => {}) {
           messages.push(await modelMessage({ ...message, content }, includeReasoning, resolveAttachment));
         }
       }
-      const maxToolRounds = 64;
-      for (let round = 0; round <= maxToolRounds; round++) {
-        const roundTools = round < maxToolRounds ? new Map(tools) : new Map();
+      const toolLimitMessage = 'The model exceeded the tool call limit.';
+      while (true) {
+        const roundTools = remainingToolCalls > 0n ? new Map(tools) : new Map();
         const descriptions = [];
         const declarations = [...roundTools].map(([name, { description, parameters }]) => {
           if (description) descriptions.push(`- \`${name}\`: ${description}`);
@@ -551,12 +554,17 @@ async function generate(res, input, receive = async () => {}) {
           delete reply.issue;
           break;
         }
-        if (round === maxToolRounds) fail(502, 'The model exceeded the tool call limit.');
+        if (remainingToolCalls === 0n) fail(502, toolLimitMessage);
         const toolMessages = [{ role: 'assistant', content: answer || null, tool_calls: calls }];
         const mediaParts = [];
         let mediaReference;
         for (const call of calls) {
           signal.throwIfAborted();
+          if (remainingToolCalls === 0n) {
+            toolMessages.push({ role: 'tool', tool_call_id: call.id, content: toolLimitMessage });
+            continue;
+          }
+          remainingToolCalls--;
           const entry = roundTools.get(call.function.name);
           const unavailable = 'This tool is unavailable.';
           let result = { isError: true, content: [{ type: 'text', text: unavailable }] };
@@ -643,6 +651,9 @@ createServer(async (req, res) => {
       if (!colorPalettes.has(colorPalette)) fail(400, 'Invalid color palette.');
       const followUpBehavior = input.followUpBehavior ?? current.followUpBehavior;
       if (!['queue', 'interrupt'].includes(followUpBehavior)) fail(400, 'Invalid follow-up behavior.');
+      const limit = input.toolCallLimit === undefined ? current.toolCallLimit : input.toolCallLimit;
+      if (typeof limit !== 'string' || !limit || /\D/.test(limit)) fail(400, 'Enter a whole-number tool call limit of 0 or more.');
+      const toolCallLimit = limit.replace(/^0+(?=\d)/, '');
       if (!Array.isArray(input.mcp) || input.mcp.length > 12) fail(400, 'Add up to 12 MCP connections.');
       const ids = new Set();
       const mcp = input.mcp.map(entry => {
@@ -663,7 +674,7 @@ createServer(async (req, res) => {
         endpoint === endpointUrl(current.endpoint) ? current.token : '';
       if (input.toolDefaults !== undefined && !validToolIds(input.toolDefaults)) fail(400, 'Invalid tool defaults.');
       const toolDefaults = selectedBuiltIns(input.toolDefaults ?? current.toolDefaults);
-      const next = { endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolDefaults, mcp };
+      const next = { endpoint, token, systemPrompt, showInferenceStats, chatTextSize, colorPalette, followUpBehavior, shareTimezone, toolCallLimit, toolDefaults, mcp };
       await save(configPath, next);
       return send(res, 200, publicSettings(next));
     }

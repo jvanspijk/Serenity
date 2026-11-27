@@ -278,6 +278,7 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 3
 .settings-section :is(input, textarea, select) { width: 100%; border: 1px solid var(--control-line); border-radius: 6px; padding: 8px 9px; background: var(--canvas); margin-top: 4px; }
 .settings-section :is(input, textarea)::placeholder { color: var(--dim); opacity: 1; }
 .settings-section textarea { display: block; resize: vertical; }
+.tool-defaults-heading { margin: 16px 0 8px; font-size: .875rem; font-weight: 600; }
 .tool-settings { display: grid; gap: 8px; }
 .settings-section .tool-setting {
   gap: 16px;

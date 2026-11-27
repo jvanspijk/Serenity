@@ -124,7 +124,12 @@
           <label class="toggle-row">Share local timezone<input class="toggle" type="checkbox" id="share-timezone"></label>
         </section>
         <section class="settings-section">
-          <h3>Tools enabled by default</h3>
+          <h3>Tools</h3>
+          <label>Tool call limit per reply
+            <input id="tool-call-limit" type="text" inputmode="numeric" pattern="[0-9]+" required aria-describedby="tool-call-limit-help">
+            <span class="tool-setting-description" id="tool-call-limit-help">Use 0 to disable tool calls.</span>
+          </label>
+          <h4 class="tool-defaults-heading">Enabled by default</h4>
           <div class="tool-settings" id="tool-defaults"></div>
         </section>
         <section class="settings-section">
