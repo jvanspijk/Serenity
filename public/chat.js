@@ -1,6 +1,6 @@
 import { sse } from './protocol.js';
 
-export function initializeChat({ settingsDialog, $, api, request, element, icon, iconButton, toggleRow, workspaceAccess }) {
+export function initializeChat({ $, api, request, element, icon, iconButton, toggleRow, workspaceAccess }) {
   const state = {
     chat: null, list: [], models: [], modelState: 'loading', settings: null,
     attachments: [], followUps: [], run: null, draftTools: null, savingTools: false, deleting: false
@@ -10,6 +10,7 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
   let messageEdit;
   const requestLocked = () => Boolean(state.run || state.savingTools || state.deleting);
   const chatLocked = () => requestLocked() || Boolean(followUpEdit) || editDialog.open;
+  const modalOpen = () => Boolean(document.querySelector(':modal'));
   const interruptOnEnter = () => state.settings?.followUpBehavior === 'interrupt';
   const hasDraft = () => Boolean($('prompt').value.trim() || state.attachments.length);
   const selectionModifier = event => event.metaKey || event.ctrlKey;
@@ -470,16 +471,26 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
     scrollDown();
   }
 
+  let previewQueue = Promise.resolve();
   function renderAttachments() {
     $('attachments').hidden = !state.attachments.length;
     $('attachments').replaceChildren(...state.attachments.map((attachment, index) => {
       const tile = element('div', 'attachment');
-      if (attachment.url) {
-        const img = element('img');
-        img.src = attachment.url;
-        img.alt = attachment.name;
-        tile.append(img);
-      } else tile.append(element('span', 'file-name', attachment.name));
+      const label = element('span', 'file-name', attachment.name);
+      tile.append(label);
+      if (/^image\/(?:avif|gif|jpeg|png|webp)$/.test(attachment.file.type)) {
+        if (!attachment.preview) {
+          attachment.preview = previewQueue.then(() => preparePreview(attachment.file));
+          previewQueue = attachment.preview;
+        }
+        attachment.preview.then(url => {
+          if (!url || !label.isConnected) return;
+          const img = element('img');
+          img.src = url;
+          img.alt = attachment.name;
+          label.replaceWith(img);
+        });
+      }
       const remove = iconButton('close', 'Remove ' + attachment.name);
       remove.addEventListener('click', () => {
         state.attachments.splice(index, 1);
@@ -821,8 +832,8 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
     }
   }
 
-  async function preparePreview(attachment) {
-    const source = URL.createObjectURL(attachment.file);
+  async function preparePreview(file) {
+    const source = URL.createObjectURL(file);
     try {
       const image = new Image();
       image.src = source;
@@ -832,18 +843,7 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
       canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
       canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
       canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-      attachment.url = canvas.toDataURL('image/webp');
-      const index = state.attachments.indexOf(attachment);
-      if (index !== -1) {
-        const tile = $('attachments').children[index];
-        const label = tile?.querySelector('.file-name');
-        if (label) {
-          const preview = element('img');
-          preview.src = attachment.url;
-          preview.alt = attachment.name;
-          label.replaceWith(preview);
-        }
-      }
+      return canvas.toDataURL('image/webp');
     } catch {
       // An unsupported preview still has its filename and can be uploaded.
     } finally {
@@ -851,17 +851,8 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
     }
   }
 
-  let previewQueue = Promise.resolve();
   function attach(files) {
-    for (const file of files) {
-      const attachment = { name: file.name, file };
-      state.attachments.push(attachment);
-      if (/^image\/(?:avif|gif|jpeg|png|webp)$/.test(file.type)) {
-        previewQueue = previewQueue.then(() => {
-          if (state.attachments.includes(attachment)) return preparePreview(attachment);
-        });
-      }
-    }
+    for (const file of files) state.attachments.push({ name: file.name, file });
     renderAttachments();
     $('prompt').focus();
   }
@@ -952,7 +943,7 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
     event.preventDefault();
   });
   document.addEventListener('keydown', event => {
-    if (event.defaultPrevented || event.key !== 'Escape' || settingsDialog.open || confirmDelete.open ||
+    if (event.defaultPrevented || event.key !== 'Escape' || modalOpen() ||
         $('history').querySelector('.history-menu:popover-open')) return;
     if (!$('tools-panel').hidden) {
       setToolsOpen(false);
@@ -1068,24 +1059,27 @@ export function initializeChat({ settingsDialog, $, api, request, element, icon,
   });
 
   let dragDepth = 0;
+  const renderDropLayer = () => { $('drop-layer').hidden = !dragDepth || modalOpen(); };
   document.addEventListener('dragenter', event => {
     if (!event.dataTransfer.types.includes('Files')) return;
     dragDepth++;
-    if (!settingsDialog.open && !confirmDelete.open && !editDialog.open) $('drop-layer').hidden = false;
+    renderDropLayer();
   });
   document.addEventListener('dragover', event => {
-    if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    renderDropLayer();
   });
   document.addEventListener('dragleave', () => {
     dragDepth = Math.max(0, dragDepth - 1);
-    if (!dragDepth) $('drop-layer').hidden = true;
+    renderDropLayer();
   });
   document.addEventListener('drop', event => {
     dragDepth = 0;
-    $('drop-layer').hidden = true;
+    renderDropLayer();
     if (!event.dataTransfer.files.length) return;
     event.preventDefault();
-    if (!settingsDialog.open && !confirmDelete.open && !editDialog.open) attach(event.dataTransfer.files);
+    if (!modalOpen()) attach(event.dataTransfer.files);
   });
 
   renderControls();

@@ -62,7 +62,7 @@ function workspaceAccess(permissions) {
 
 const settingsDialog = $('settings');
 const chatSettings = initializeChat({
-  settingsDialog, $, api, request, element, icon, iconButton, toggleRow, workspaceAccess
+  $, api, request, element, icon, iconButton, toggleRow, workspaceAccess
 });
 initializeSettings({
   dialog: settingsDialog, api, element, iconButton, toggleRow, workspaceAccess, ...chatSettings
