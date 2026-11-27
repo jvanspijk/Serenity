@@ -20,6 +20,33 @@ export const workspaceRenderers = new Map([
     readDescription: 'Returns one playable chunk of an audio file.' }]
 ]);
 const viewKinds = new Map(Array.from(workspaceRenderers, ([kind, { extension }]) => [extension, kind]));
+const viewReference = /^\/media\/(view-[1-9]\d*)\.(\w+)$/;
+
+export async function pruneWorkspace(chatId, attachments, messages) {
+  const workspace = workspacePath(chatId);
+  if (!await checkDirectory(workspace)) return;
+  const uploads = new Set(attachments.map(attachment => attachment.entry));
+  const recipes = new Set();
+  const keepView = path => {
+    const match = viewReference.exec(path);
+    if (match && viewKinds.has(match[2])) recipes.add(match[1] + '.json');
+  };
+  for (const message of messages) {
+    for (const view of message.views ?? []) keepView(view.path);
+    for (const entry of message.toolMessages ?? []) {
+      if (entry.role !== 'tool' || !entry.content.startsWith('{')) continue;
+      try { keepView(JSON.parse(entry.content)?.path); } catch { /* Plain-text results have no structured path. */ }
+    }
+  }
+  // These directories contain only uploads and recipes owned by the conversation.
+  for (const [folder, retained] of [['files', uploads], ['media', recipes]]) {
+    const directory = join(workspace, folder);
+    if (!await checkDirectory(directory)) continue;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isFile() && !retained.has(entry.name)) await rm(join(directory, entry.name), { force: true });
+    }
+  }
+}
 
 function chunkSource(path, attachment, filename, chunk) {
   const { chunks, samples, channels } = attachment.media;
@@ -90,7 +117,7 @@ export function workspaceMedia(chatId, attachments, signal) {
       }
       const source = await attachmentInput(reference, resolveAttachment, options);
       if (source) return source;
-      const copy = /^\/media\/(view-[1-9]\d*)\.(\w+)$/.exec(reference);
+      const copy = viewReference.exec(reference);
       if (copy) {
         const [, name, format] = copy;
         const kind = viewKinds.get(format);

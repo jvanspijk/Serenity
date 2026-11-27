@@ -14,7 +14,8 @@ import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
 import { cleanWorkspaceStaging, deleteWorkspace, withWorkspace } from './workspace.js';
 import {
-  attachmentMarkdown, attachmentPreview, attachmentResolver, availableMedia, presentAttachments, workspaceMedia, workspaceRenderers
+  attachmentMarkdown, attachmentPreview, attachmentResolver, availableMedia, presentAttachments,
+  pruneWorkspace, workspaceMedia, workspaceRenderers
 } from './workspace-media.js';
 
 const host = process.env.HOST || '127.0.0.1';
@@ -483,8 +484,13 @@ async function generate(res, input, receive = async () => {}) {
       }
     };
     try {
-      let remainingToolCalls = BigInt(config.toolCallLimit);
       const workspaceAttachments = history.messages.flatMap(message => message.attachments || []);
+      // Reconcile only after the new history has been saved.
+      await pruneWorkspace(chatId, workspaceAttachments, history.messages).catch(error => {
+        console.error('Could not clean up the conversation workspace.', error);
+        fail(500, 'Could not clean up the workspace. You can retry the reply.');
+      });
+      let remainingToolCalls = BigInt(config.toolCallLimit);
       const media = await availableMedia(workspaceAttachments, resolveAttachment);
       const enabled = availableTools.filter(({ id, mediaKind }) =>
         remainingToolCalls > 0n && history.tools.builtIn.includes(id) && (!mediaKind || media.has(mediaKind)));
