@@ -71,7 +71,7 @@ async function readWorkspaceText(path, offset, limit, signal) {
 export const readFileTool = {
   name: 'read_file',
   label: 'Read file',
-  description: 'Reads a workspace file. Returns a bounded line range for text. Use paths from earlier tool results to inspect their media again.',
+  description: 'Opens a workspace file and returns its contents. Text files return a bounded line range. Use an attachment or an earlier view path.',
   parameters: {
     type: 'object',
     properties: {
@@ -98,6 +98,7 @@ export const readFileTool = {
     if (offset !== undefined || limit !== undefined) throw new WorkspaceMediaError('Use offset and limit with text files.');
     const { render, result } = workspaceRenderers.get(source.kind);
     const output = result(source.reference, await render(source, signal));
+    if (source.page !== undefined) output.page = source.page;
     if (source.nextPath) output.next_path = source.nextPath;
     if (warning) output.warning = warning;
     return output;

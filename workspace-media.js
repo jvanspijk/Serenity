@@ -15,9 +15,9 @@ const chunkWarning = chunk => chunk === undefined ? undefined : 'This file is no
 
 export const workspaceRenderers = new Map([
   ['image', { render: renderImage, result: imageResult, extension: 'webp', presentLabel: 'an image or PDF page',
-    readDescription: 'Returns an image for an image file or selected PDF page.' }],
+    readDescription: 'Returns the image pixels and dimensions for an image file or PDF page. For a PDF, chunk selects the page and defaults to 1. Inspect the returned image directly.' }],
   ['audio', { render: renderAudio, result: audioResult, extension: 'wav', presentLabel: 'an audio clip with playback controls',
-    readDescription: 'Returns one chunk for an audio file.' }]
+    readDescription: 'Returns one playable chunk of an audio file.' }]
 ]);
 const viewKinds = new Map(Array.from(workspaceRenderers, ([kind, { extension }]) => [extension, kind]));
 

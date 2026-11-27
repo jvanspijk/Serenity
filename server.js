@@ -347,6 +347,26 @@ async function modelMessage({ role, content, reasoning, reasoningField, attachme
     ...(native && { [reasoningField]: reasoning }) };
 }
 
+function toolMediaParts({ name, callId, path, page }, part) {
+  const location = page === undefined ? path : path + ' (PDF page ' + page + ')';
+  return [
+    { type: 'text', text: 'Tool output from ' + name + ' (call ' + callId + '): ' + location },
+    part
+  ];
+}
+
+async function restoreToolMedia(media, workspace, signal) {
+  try {
+    const source = await workspace.input(media.path);
+    const renderer = workspaceRenderers.get(source.kind);
+    const rendered = await renderer.render(source, signal);
+    return toolMediaParts(media, renderer.result(media.path, rendered)[toolMedia]);
+  } catch (error) {
+    signal.throwIfAborted();
+    console.warn(JSON.stringify({ event: 'tool_media_restore_failed', toolCallId: media.callId, error: error.message }));
+  }
+}
+
 function viewURL(chatId, viewId) {
   return '/api/chats/' + chatId + '/views/' + viewId;
 }
@@ -483,9 +503,17 @@ async function generate(res, input, receive = async () => {}) {
       ].filter(Boolean).join('\n\n');
       const priorMessages = history.messages.slice(0, -1);
       const previousReply = priorMessages.findLast(message => message.role === 'assistant');
+      const latestMedia = priorMessages.flatMap(message => message.toolMessages ?? [])
+        .findLast(message => message.media)?.media;
       const messages = [{ role: 'system', content: systemPrompt }];
       for (const message of priorMessages) {
-        messages.push(...(message.toolMessages ?? []));
+        for (const entry of message.toolMessages ?? []) {
+          if (!entry.media) messages.push(entry);
+          else if (entry.media === latestMedia) {
+            const parts = await restoreToolMedia(entry.media, workspace, signal);
+            if (parts) messages.push({ role: 'user', content: parts });
+          }
+        }
         const content = message.role === 'user' ? message.content : message.finalContent;
         const includeReasoning = message === previousReply && Boolean(message.reasoningField && message.reasoning);
         if (message.role === 'user' || content || message.views?.length || includeReasoning) {
@@ -514,6 +542,7 @@ async function generate(res, input, receive = async () => {}) {
         if (round === maxToolRounds) fail(502, 'The model exceeded the tool call limit.');
         const toolMessages = [{ role: 'assistant', content: answer || null, tool_calls: calls }];
         const mediaParts = [];
+        let mediaReference;
         for (const call of calls) {
           signal.throwIfAborted();
           const entry = roundTools.get(call.function.name);
@@ -541,12 +570,14 @@ async function generate(res, input, receive = async () => {}) {
           }
           const part = result?.[toolMedia];
           if (part) {
-            const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
-            mediaParts.push({ type: 'text', text: label }, part);
+            mediaReference = { name: call.function.name, callId: call.id, path: result.path, page: result.page };
+            mediaParts.push(...toolMediaParts(mediaReference, part));
           }
           toolMessages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
         }
+        // Save a workspace reference instead of duplicating media bytes in chat history.
         (reply.toolMessages ??= []).push(...toolMessages);
+        if (mediaReference) reply.toolMessages.push({ media: mediaReference });
         await save(chatPath(chatId), history);
         messages.push(...toolMessages);
         // Chat Completions accepts image and audio parts in user messages, after all tool replies.
