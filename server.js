@@ -397,8 +397,11 @@ function beginChatOperation(id, operation, replyConflict) {
 }
 
 async function generate(res, input, receive = async () => {}) {
-  const { id, model, retry } = input;
+  const { id, model, retry, edit } = input;
   if (id && !uuid.test(id)) fail(400, 'Invalid conversation.');
+  if (edit !== undefined && (!id || retry || !Number.isSafeInteger(edit?.index) || edit.index < 0)) {
+    fail(400, 'Invalid message edit.');
+  }
   if (typeof model !== 'string' || !model.trim() || model.length > 500) fail(400, 'Choose a model first.');
   const content = typeof input.content === 'string' ? input.content.trim() : '';
   if (content.length > 100000) fail(400, 'This message is too long.');
@@ -433,15 +436,24 @@ async function generate(res, input, receive = async () => {}) {
       const last = history.messages.at(-1);
       if (last?.role !== 'assistant' || !last.issue) fail(409, 'There is no interrupted reply to retry.');
     }
+    const edited = edit && history.messages[edit.index];
+    if (edit && (edit.updated !== history.updated || edited?.role !== 'user')) {
+      fail(409, 'This conversation changed. Reopen it before editing.');
+    }
     const reply = { role: 'assistant', model, content: '', finalContent: '', reasoning: '', issue: 'Reply interrupted.' };
     const resolveAttachment = attachmentResolver(chatId);
     const previousEntries = history.messages.flatMap(message => (message.attachments || []).map(attachment => attachment.entry));
-    const attachments = await withWorkspace(chatId, previousEntries, receive, controller.signal, async attachments => {
-      if (retry && attachments.length) fail(400, 'A reply retry cannot upload files.');
+    const attachments = await withWorkspace(chatId, previousEntries, receive, controller.signal, async uploads => {
+      if (retry && uploads.length) fail(400, 'A reply retry cannot upload files.');
+      if (edit && uploads.length) fail(400, 'A message edit cannot upload files.');
+      const attachments = edited?.attachments ?? uploads;
       if (!retry && !content && !attachments.length) fail(400, 'Enter a message or attach a file.');
-      if (!chat) history.title = (content.replace(/\s+/g, ' ') || attachments[0]?.name).slice(0, 58);
+      if (!chat || edit?.index === 0) history.title = (content.replace(/\s+/g, ' ') || attachments[0].name).slice(0, 58);
       if (retry) history.messages.pop();
-      else history.messages.push({ role: 'user', content, attachments });
+      else {
+        if (edit) history.messages.length = edit.index;
+        history.messages.push({ role: 'user', content, attachments });
+      }
       history.messages.push(reply);
       history.model = model;
       history.updated = new Date().toISOString();

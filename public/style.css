@@ -199,8 +199,9 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: r
 .reply-issue { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--warn); font-size: .875rem; margin-top: 8px; }
 .reply-issue button, .model-notice button { padding: 0; text-decoration: underline; text-underline-offset: 3px; font-size: inherit; color: var(--text); }
 .copy { margin: 7px 0 0 -6px; width: 30px; height: 29px; }
-.message.user .copy { display: grid; margin-inline-start: auto; }
-.copy svg { width: 16px; height: 16px; }
+.message-actions { display: flex; justify-content: flex-end; gap: 2px; margin-top: 7px; }
+.message-actions .icon { margin: 0; width: 30px; height: 29px; }
+.copy svg, .edit-message svg { width: 16px; height: 16px; }
 
 .dock { width: min(100%, 790px); align-self: center; padding: 12px 24px 21px; flex: none; }
 .follow-ups { display: grid; gap: 4px; max-height: min(22vh, 150px); overflow: auto; margin: 0 0 8px; padding: 0; list-style: none; }
@@ -302,6 +303,10 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 3
 .danger:hover { background: var(--warn-hover); }
 #settings-error { color: var(--warn); margin-top: 13px; font-size: .875rem; }
 #settings-error:empty { margin: 0; }
+#edit-message-text { margin: 0 0 10px; }
+#edit-message-description, #edit-message-error { font-size: .875rem; }
+#edit-message-description { color: var(--muted); }
+#edit-message-error:not(:empty) { color: var(--warn); margin-top: 8px; }
 #confirm-delete { max-width: 430px; }
 
 @media (max-width: 880px) {

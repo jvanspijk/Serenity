@@ -141,6 +141,18 @@
     </form>
   </dialog>
 
+  <dialog id="edit-message" aria-labelledby="edit-message-title" aria-describedby="edit-message-description">
+    <form id="edit-message-form">
+      <div class="dialog-heading"><h2 id="edit-message-title">Edit message</h2></div>
+      <div class="settings-body settings-section">
+        <textarea id="edit-message-text" aria-label="Message text" rows="5" maxlength="100000" autofocus></textarea>
+        <p id="edit-message-description">Sending this edit permanently removes the messages that follow it.</p>
+        <p id="edit-message-error" role="alert"></p>
+      </div>
+      <div class="dialog-actions"><button type="button" class="secondary" id="cancel-message-edit">Cancel</button><button class="primary" id="send-message-edit">Save and send</button></div>
+    </form>
+  </dialog>
+
   <dialog id="confirm-delete" aria-labelledby="delete-title" aria-describedby="delete-description">
     <form method="dialog">
       <div class="dialog-heading"><h2 id="delete-title">Delete conversation?</h2></div>

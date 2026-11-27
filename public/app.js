@@ -7,8 +7,10 @@ const state = {
 };
 const ns = 'http://www.w3.org/2000/svg';
 let followUpEdit = null;
+const editDialog = $('edit-message');
+let messageEdit;
 const requestLocked = () => Boolean(state.run || state.savingTools || state.deleting);
-const chatLocked = () => requestLocked() || Boolean(followUpEdit);
+const chatLocked = () => requestLocked() || Boolean(followUpEdit) || editDialog.open;
 const interruptOnEnter = () => state.settings?.followUpBehavior === 'interrupt';
 const hasDraft = () => Boolean($('prompt').value.trim() || state.attachments.length);
 const selectionModifier = event => event.metaKey || event.ctrlKey;
@@ -90,9 +92,16 @@ function renderControls() {
   $('new-chat').disabled = chatLocked();
   $('tools-button').disabled = Boolean(state.run || followUpEdit) || !state.settings;
   $('tool-options').disabled = chatLocked();
-  $('thread').querySelectorAll('.reply-issue button').forEach(button => {
+  $('thread').querySelectorAll('.reply-issue button, .edit-message').forEach(button => {
     button.disabled = !hasModel || chatLocked();
   });
+  if (editDialog.open) {
+    const text = $('edit-message-text');
+    text.readOnly = Boolean(state.run);
+    $('cancel-message-edit').disabled = Boolean(state.run);
+    $('send-message-edit').disabled = !hasModel || Boolean(state.run) ||
+      (!text.value.trim() && !messageEdit.hasAttachments);
+  }
 }
 
 function selectedTools() {
@@ -404,8 +413,12 @@ function makeMessage(message, options = {}) {
     if (files.childElementCount) bubble.append(files);
     bubble.prepend(element('div', 'user-label', 'You'));
     bubble.append(element('div', 'message-text', message.content));
-    article.append(bubble);
-    if (message.content) article.append(copy);
+    const actions = element('div', 'message-actions');
+    const edit = iconButton('edit', 'Edit message', 'icon edit-message');
+    edit.addEventListener('click', () => openMessageEdit(message, edit));
+    if (message.content) actions.append(copy);
+    actions.append(edit);
+    article.append(bubble, actions);
     return { article };
   }
   const label = element('div', 'answer-head');
@@ -469,7 +482,7 @@ function makeMessage(message, options = {}) {
         retry.type = 'button';
         retry.addEventListener('click', () => {
           const model = $('models').value;
-          if (!chatLocked() && state.modelState === 'online' && model) submit({ model }, true);
+          if (!chatLocked() && state.modelState === 'online' && model) submit({ model }, { retry: true });
         });
         issue.append(retry);
       }
@@ -660,6 +673,19 @@ function newChat() {
   $('prompt').focus();
 }
 
+function openMessageEdit(message, trigger) {
+  if (chatLocked()) return;
+  const { messages, updated } = state.chat;
+  messageEdit = { index: messages.indexOf(message), updated, hasAttachments: Boolean(message.attachments?.length), trigger };
+  navigation++;
+  const text = $('edit-message-text');
+  text.value = message.content;
+  $('edit-message-error').textContent = '';
+  editDialog.showModal();
+  text.setSelectionRange(text.value.length, text.value.length);
+  renderControls();
+}
+
 function submitDraft(interrupt) {
   if (!hasDraft() || $('send').disabled) return;
   if (followUpEdit) {
@@ -702,7 +728,7 @@ function sendNext() {
   submit(state.followUps.shift());
 }
 
-async function submit(message, retry = false) {
+async function submit(message, { retry = false, edit } = {}) {
   const { model, content = '', attachments = [] } = message;
   const id = state.chat?.id;
   const reply = { role: 'assistant', model, content: '', reasoning: '' };
@@ -734,7 +760,7 @@ async function submit(message, retry = false) {
     const localDateTime = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-') +
       ' ' + [now.getHours(), now.getMinutes()].map(value => String(value).padStart(2, '0')).join(':');
     const input = {
-      id, model, content, retry,
+      id, model, content, retry, ...(edit && { edit }),
       localDateTime, ...(state.settings?.shareTimezone && { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       ...(!id && state.draftTools && { tools: state.draftTools })
     };
@@ -755,6 +781,13 @@ async function submit(message, retry = false) {
         run.replyId = event.replyId;
         if (run.stopRequested) stopStream(run);
         const messages = state.chat?.messages || [];
+        const thread = $('thread');
+        if (edit) {
+          messages.length = edit.index;
+          for (const article of Array.from(thread.children).slice(edit.index)) article.remove();
+          editDialog.close();
+          $('prompt').focus({ preventScroll: true });
+        }
         if (retry) messages.pop();
         else messages.push({ role: 'user', content, attachments: event.attachments });
         messages.push(reply);
@@ -762,15 +795,16 @@ async function submit(message, retry = false) {
         syncTools();
         state.list = [event.chat, ...state.list.filter(chat => chat.id !== event.chat.id)];
         history.replaceState(null, '', '#' + state.chat.id);
-        $('thread').hidden = false;
-        if (retry) $('thread').lastElementChild?.remove();
+        thread.hidden = false;
+        if (retry) thread.lastElementChild?.remove();
         else {
-          $('thread').lastElementChild?.querySelector('.reply-issue button')?.remove();
-          $('thread').append(makeMessage(messages.at(-2)).article);
+          thread.lastElementChild?.querySelector('.reply-issue button')?.remove();
+          thread.append(makeMessage(messages.at(-2)).article);
         }
-        $('thread').append(assistant.article);
+        thread.append(assistant.article);
         renderStats();
         renderHistory();
+        renderControls();
         scrollDown();
       } else if (event.type === 'content' || event.type === 'reasoning') {
         const firstContent = event.type === 'content' && !reply.content && event.text;
@@ -796,6 +830,7 @@ async function submit(message, retry = false) {
     if (!finished) throw new Error('The connection closed before the reply finished.');
   } catch (error) {
     if (started) reply.issue = error.message;
+    else if (edit) $('edit-message-error').textContent = error.message;
     else {
       status(error.message);
       if (!retry) {
@@ -1228,12 +1263,30 @@ $('composer').addEventListener('submit', event => {
 });
 $('stop-reply').addEventListener('click', stopReply);
 $('cancel-follow-up-edit').addEventListener('click', () => finishFollowUpEdit(false));
+$('edit-message-text').addEventListener('input', renderControls);
+$('cancel-message-edit').addEventListener('click', () => editDialog.close());
+editDialog.addEventListener('cancel', event => {
+  if (state.run) event.preventDefault();
+});
+editDialog.addEventListener('close', () => {
+  renderControls();
+  if (editDialog.open) return;
+  messageEdit.trigger.focus({ preventScroll: true });
+  messageEdit = null;
+});
+$('edit-message-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!editDialog.open || $('send-message-edit').disabled) return;
+  $('edit-message-error').textContent = '';
+  const { index, updated } = messageEdit;
+  submit({ model: $('models').value, content: $('edit-message-text').value.trim() }, { edit: { index, updated } });
+});
 
 let dragDepth = 0;
 document.addEventListener('dragenter', event => {
   if (!event.dataTransfer.types.includes('Files')) return;
   dragDepth++;
-  if (!settingsDialog.open && !confirmDelete.open) $('drop-layer').hidden = false;
+  if (!settingsDialog.open && !confirmDelete.open && !editDialog.open) $('drop-layer').hidden = false;
 });
 document.addEventListener('dragover', event => {
   if (event.dataTransfer.types.includes('Files')) event.preventDefault();
@@ -1247,7 +1300,7 @@ document.addEventListener('drop', event => {
   $('drop-layer').hidden = true;
   if (!event.dataTransfer.files.length) return;
   event.preventDefault();
-  if (!settingsDialog.open && !confirmDelete.open) attach(event.dataTransfer.files);
+  if (!settingsDialog.open && !confirmDelete.open && !editDialog.open) attach(event.dataTransfer.files);
 });
 
 renderControls();
