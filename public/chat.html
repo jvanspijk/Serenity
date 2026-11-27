@@ -41,11 +41,11 @@
         <div class="composer-actions">
           <input id="files" type="file" multiple hidden>
           <button type="button" class="icon" id="attach" title="Attach files" aria-label="Attach files"><svg><use href="/icons.svg#plus"/></svg></button>
-          <div class="chat-tools" id="chat-tools">
-            <button type="button" class="tools-button" id="tools-button" aria-label="Tools" aria-expanded="false" aria-controls="tools-panel">
+          <div>
+            <button type="button" class="tools-button" id="tools-button" aria-label="Tools" popovertarget="tools-panel">
               <svg aria-hidden="true"><use href="/icons.svg#plug"/></svg><span class="tools-label">Tools</span>
             </button>
-            <div class="tools-panel" id="tools-panel" hidden>
+            <div class="tools-panel" id="tools-panel" popover>
               <fieldset id="tool-options"><legend>Tools for this chat</legend><div id="tool-switches"></div></fieldset>
             </div>
           </div>

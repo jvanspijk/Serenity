@@ -72,11 +72,6 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     };
   }
 
-  function setToolsOpen(open) {
-    $('tools-panel').hidden = !open;
-    $('tools-button').setAttribute('aria-expanded', String(open));
-  }
-
   function syncTools() {
     const selected = selectedTools();
     const switches = [...$('tool-switches').querySelectorAll('input')];
@@ -125,7 +120,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
       state.savingTools = false;
       syncTools();
       renderControls();
-      if (!$('tools-panel').hidden) input.focus();
+      if ($('tools-panel').matches(':popover-open')) input.focus();
     }
   }
 
@@ -550,7 +545,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     followUpEdit = { message, draft: prompt.value, attachments: state.attachments, waiting: false };
     prompt.value = message.content;
     state.attachments = [...message.attachments];
-    setToolsOpen(false);
+    $('tools-panel').hidePopover();
     renderFollowUps();
     renderAttachments();
     prompt.focus();
@@ -586,7 +581,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     state.followUps = [];
     renderFollowUps();
     state.draftTools = null;
-    setToolsOpen(false);
+    $('tools-panel').hidePopover();
     syncTools();
     renderAttachments();
     status();
@@ -698,7 +693,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     }
     const run = state.run = { model, chatId: null, replyId: null, stopRequested: false };
     navigation++;
-    setToolsOpen(false);
+    $('tools-panel').hidePopover();
     status();
     $('chat-announcement').textContent = attachments.length ? 'Uploading attachments.' : 'Waiting for reply.';
     renderHistory();
@@ -839,11 +834,6 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     $('prompt').focus();
   }
 
-  $('tools-button').addEventListener('click', () => setToolsOpen($('tools-panel').hidden));
-  document.addEventListener('click', event => {
-    if (!$('chat-tools').contains(event.target)) setToolsOpen(false);
-  });
-
   const mobile = matchMedia('(max-width: 690px)');
   const sidebarToggle = $('sidebar-toggle');
   function setMobileSidebar(open) {
@@ -913,13 +903,7 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
     event.preventDefault();
   });
   document.addEventListener('keydown', event => {
-    if (event.defaultPrevented || event.key !== 'Escape' || modalOpen() ||
-        $('history').querySelector('.history-menu:popover-open')) return;
-    if (!$('tools-panel').hidden) {
-      setToolsOpen(false);
-      $('tools-button').focus();
-      return;
-    }
+    if (event.defaultPrevented || event.key !== 'Escape' || modalOpen() || document.querySelector(':popover-open')) return;
     if (document.body.classList.contains('sidebar-open')) {
       closeSidebar();
     }

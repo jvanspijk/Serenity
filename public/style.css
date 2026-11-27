@@ -230,12 +230,14 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: r
 .model-picker select:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .model-picker select:disabled { cursor: default; }
 .model-picker .chevron { position: absolute; inset-inline-end: 6px; width: 14px; color: var(--muted); }
-.chat-tools { position: relative; }
 .tools-button { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 9px; border-radius: 7px; color: var(--muted); font-size: .875rem; }
 .tools-button svg { width: 17px; height: 17px; }
-.tools-button:hover:not(:disabled), .tools-button[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.tools-button:hover:not(:disabled), .tools-button:has(+ .tools-panel:popover-open) { background: var(--hover); color: var(--text); }
 .tools-button.is-active { color: var(--accent); }
-.tools-panel { position: absolute; z-index: 1; bottom: calc(100% + 9px); left: 0; width: min(255px, calc(100vw - 82px)); max-height: min(295px, 40vh); overflow: auto; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--canvas); }
+.tools-panel { width: min(255px, calc(100vw - 82px)); max-height: min(295px, 40vh); overflow: auto; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--canvas); color: inherit; }
+@supports (position-area: block-start span-inline-end) {
+  .tools-panel { inset: auto; margin: 9px 0; position-area: block-start span-inline-end; }
+}
 .tools-panel fieldset { margin: 0; padding: 0; min-inline-size: 0; border: 0; }
 .tools-panel legend { padding: 0 6px 6px; color: var(--muted); font-size: .8rem; }
 .toggle-row, .settings-section .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: .875rem; }
