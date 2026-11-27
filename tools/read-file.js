@@ -71,7 +71,7 @@ async function readWorkspaceText(path, offset, limit, signal) {
 export const readFileTool = {
   name: 'read_file',
   label: 'Read file',
-  description: 'Reads a workspace file. Returns a bounded line range for text.',
+  description: 'Reads a workspace file. Returns a bounded line range for text. Use paths from earlier tool results to inspect their media again.',
   parameters: {
     type: 'object',
     properties: {

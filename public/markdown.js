@@ -31,39 +31,33 @@ for (const rule of ['th_open', 'td_open']) {
   };
 }
 
-export function updateMarkdown(target, text) {
-  const template = document.createElement('template');
-  template.innerHTML = markdown.render(text).trim();
-
-  // Later lines can change earlier Markdown, for example by defining a reference link.
-  // Reparse the full text while keeping matching elements and growing text in place.
-  updateChildren(target, template.content);
+export function renderMarkdown(text) {
+  return markdown.render(text).trim();
 }
 
-function updateChildren(target, source) {
-  let current = target.firstChild;
-  for (const next of [...source.childNodes]) {
-    if (!current) {
-      target.append(next);
-      continue;
+export function streamMarkdown(target) {
+  const boundary = document.createComment('');
+  const range = document.createRange();
+  target.replaceChildren(boundary);
+  target.classList.add('markdown');
+  let offset = 0;
+
+  return text => {
+    const tail = text.slice(offset);
+    const lines = tail.split(/(?<=\n)|(?<=\r)(?!\n)/);
+    const env = {};
+    const tokens = markdown.parse(tail, env);
+    // Keep the last block reparsable. An unfinished line can change where it starts.
+    const split = Math.max(0, tokens.findLastIndex(token => token.level === 0 && token.map?.[0] < lines.length - 1));
+
+    range.setStartAfter(boundary);
+    range.setEnd(target, target.childNodes.length);
+    range.deleteContents();
+    if (split > 0) {
+      const html = markdown.renderer.render(tokens.slice(0, split), markdown.options, env);
+      boundary.before(range.createContextualFragment(html));
+      offset += lines.slice(0, tokens[split].map[0]).join('').length;
     }
-    const sibling = current.nextSibling;
-    if (!current.isEqualNode(next)) {
-      if (current.nodeType === Node.TEXT_NODE && next.nodeType === Node.TEXT_NODE) {
-        current.data = next.data;
-      } else if (current.nodeType === Node.ELEMENT_NODE && current.nodeName === next.nodeName &&
-        current.attributes.length === next.attributes.length &&
-        next.getAttributeNames().every(name => current.getAttribute(name) === next.getAttribute(name))) {
-        updateChildren(current, next);
-      } else {
-        current.replaceWith(next);
-      }
-    }
-    current = sibling;
-  }
-  while (current) {
-    const sibling = current.nextSibling;
-    current.remove();
-    current = sibling;
-  }
+    target.insertAdjacentHTML('beforeend', markdown.renderer.render(tokens.slice(split), markdown.options, env));
+  };
 }

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
@@ -9,8 +8,7 @@ import { inspectAudio, isAudioUpload, samplesPerChunk } from './audio.js';
 import { quotaError, uploadError, workspaceLimit } from './multipart.js';
 import { pdfPages } from './tools/media-source.js';
 
-export const root = resolve(process.env.SERENITY_WORKSPACE_DIR ||
-  join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'serenity-workspaces'));
+export const root = resolve(process.env.SERENITY_WORKSPACE_DIR || join(process.env.DATA_DIR || 'data', 'workspaces'));
 const instructions = '# Conversation workspace\n\n' +
   '- /files contains attachments for this conversation.\n' +
   '- /scripts is reserved for future use.\n';
@@ -38,6 +36,15 @@ async function ensureRoot() {
   const info = await lstat(root);
   if (!info.isDirectory() || (process.getuid && (info.uid !== process.getuid() || (info.mode & 0o077)))) {
     throw new Error('The workspace root must be private.');
+  }
+}
+
+export async function cleanWorkspaceStaging() {
+  await ensureRoot();
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && /^\.(upload|media)-[a-z0-9]{6}$/i.test(entry.name)) {
+      await rm(join(root, entry.name), { recursive: true, force: true, maxRetries: 3 });
+    }
   }
 }
 

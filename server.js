@@ -1,17 +1,18 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { bearer, httpUrl, sse } from './protocol.js';
 import { connectMcp } from './mcp.js';
 import { builtInTools } from './tool-registry.js';
 import { createMcpDiscovery } from './tools/mcp-discovery.js';
 import { toolMedia, WorkspaceMediaError } from './tools/media-source.js';
-import { createPresentView } from './tools/present-view.js';
+import { createShowView } from './tools/present-view.js';
 import { readFileTool } from './tools/read-file.js';
 import { discoverPlugins, pluginTools } from './plugin-sdk.js';
 import { readMultipart } from './multipart.js';
-import { deleteWorkspace, withWorkspace } from './workspace.js';
+import { cleanWorkspaceStaging, deleteWorkspace, withWorkspace } from './workspace.js';
 import {
   attachmentMarkdown, attachmentPreview, attachmentResolver, availableMedia, presentAttachments, workspaceMedia, workspaceRenderers
 } from './workspace-media.js';
@@ -51,6 +52,7 @@ const defaults = {
   mcp: []
 };
 await mkdir(chats, { recursive: true });
+await cleanWorkspaceStaging();
 const plugins = await discoverPlugins(pluginDirectory, pluginWorkspace);
 const availableTools = [
   ...builtInTools,
@@ -75,17 +77,54 @@ const paletteOptions = paletteNames.filter(name => colorPalettes.has(name)).map(
 const index = (await readFile(new URL('./public/index.html', import.meta.url), 'utf8'))
   .replace('<!-- Palette stylesheets -->', paletteLinks.join('\n  '))
   .replace('<!-- Palette options -->', paletteOptions.join('\n              '));
+const publicFile = path => readFile(new URL('./public' + path, import.meta.url));
 const staticFiles = new Map(await Promise.all([
-  ['/style.css', 'style.css', 'text/css'],
-  ...[...colorPalettes].map(name => ['/palettes/' + name + '.css', 'palettes/' + name + '.css', 'text/css']),
-  ['/app.js', 'app.js', 'text/javascript'],
-  ['/markdown.js', 'markdown.js', 'text/javascript'],
-  ['/icons.svg', 'icons.svg', 'image/svg+xml']
-].map(async ([url, file, type]) => [url, [type, await readFile(new URL('./public/' + file, import.meta.url))]])));
-staticFiles.set('/', ['text/html', index]);
-staticFiles.set('/markdown-it.mjs', ['text/javascript',
-  await readFile(new URL(import.meta.resolve('markdown-it/browser')))]);
-staticFiles.set('/protocol.js', ['text/javascript', await readFile(new URL('./protocol.js', import.meta.url))]);
+  ['/', 'text/html', Buffer.from(index)],
+  ['/style.css', 'text/css', publicFile('/style.css')],
+  ...[...colorPalettes].map(name => {
+    const path = '/palettes/' + name + '.css';
+    return [path, 'text/css', publicFile(path)];
+  }),
+  ['/app.js', 'text/javascript', publicFile('/app.js')],
+  ['/markdown.js', 'text/javascript', publicFile('/markdown.js')],
+  ['/icons.svg', 'image/svg+xml', publicFile('/icons.svg')],
+  ['/markdown-it.mjs', 'text/javascript', readFile(new URL(import.meta.resolve('markdown-it/browser')))],
+  ['/protocol.js', 'text/javascript', readFile(new URL('./protocol.js', import.meta.url))]
+].map(async ([url, type, source]) => {
+  const body = await source;
+  const tag = '"' + createHash('sha256').update(body).digest('base64url') + '"';
+  return [url, { type, body, gzip: gzipSync(body), tag }];
+})));
+
+function sendStatic(req, res, { type, body, gzip, tag }) {
+  res.setHeader('Vary', 'Accept-Encoding');
+  const encodings = new Map((req.headers['accept-encoding'] || '').toLowerCase().split(',').map(value => {
+    const [name, weight = 'q=1'] = value.trim().split(/\s*;\s*/);
+    return [name, Number(weight.slice(2))];
+  }));
+  const wildcard = encodings.get('*');
+  const gzipQuality = encodings.get('gzip') ?? wildcard ?? 0;
+  const identityQuality = encodings.get('identity') ?? (wildcard === 0 ? 0 : 1);
+  const useGzip = gzipQuality > 0 && gzipQuality >= identityQuality;
+  if (!useGzip && identityQuality === 0) {
+    res.writeHead(406);
+    return res.end();
+  }
+
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('ETag', 'W/' + tag);
+  const validators = (req.headers['if-none-match'] || '').split(',').map(value => value.trim().replace(/^W\//, ''));
+  if (validators.includes('*') || validators.includes(tag)) {
+    res.writeHead(304);
+    return res.end();
+  }
+  if (useGzip) {
+    res.setHeader('Content-Encoding', 'gzip');
+    body = gzip;
+  }
+  res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Content-Length': body.length });
+  return res.end(body);
+}
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -374,7 +413,7 @@ async function generate(res, input, receive = async () => {}) {
       const last = history.messages.at(-1);
       if (last?.role !== 'assistant' || !last.issue) fail(409, 'There is no interrupted reply to retry.');
     }
-    const reply = { role: 'assistant', model, content: '', reasoning: '', issue: 'Reply interrupted.' };
+    const reply = { role: 'assistant', model, content: '', finalContent: '', reasoning: '', issue: 'Reply interrupted.' };
     const resolveAttachment = attachmentResolver(chatId);
     const previousEntries = history.messages.flatMap(message => (message.attachments || []).map(attachment => attachment.entry));
     const attachments = await withWorkspace(chatId, previousEntries, receive, controller.signal, async attachments => {
@@ -415,12 +454,12 @@ async function generate(res, input, receive = async () => {}) {
       });
       const workspace = workspaceMedia(chatId, workspaceAttachments, signal);
       if (media.size) {
-        const presentView = createPresentView(media, view => {
+        const showView = createShowView(media, view => {
           const entry = { ...view, id: randomUUID() };
           (reply.views ??= []).push(entry);
           emit('view', { view: { ...entry, url: viewURL(chatId, entry.id) } });
         });
-        tools.set(presentView.name, presentView);
+        tools.set(showView.name, showView);
       }
       const servers = config.mcp.filter(server => history.tools.mcp.includes(server.id));
       const connections = await Promise.all(servers.map(async server => {
@@ -444,13 +483,15 @@ async function generate(res, input, receive = async () => {}) {
       ].filter(Boolean).join('\n\n');
       const priorMessages = history.messages.slice(0, -1);
       const previousReply = priorMessages.findLast(message => message.role === 'assistant');
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        ...await Promise.all(priorMessages
-          .filter(message => message.role === 'user' || message.content || message.views?.length ||
-            (message === previousReply && message.reasoningField && message.reasoning))
-          .map(message => modelMessage(message, message === previousReply, resolveAttachment)))
-      ];
+      const messages = [{ role: 'system', content: systemPrompt }];
+      for (const message of priorMessages) {
+        messages.push(...(message.toolMessages ?? []));
+        const content = message.role === 'user' ? message.content : message.finalContent;
+        const includeReasoning = message === previousReply && Boolean(message.reasoningField && message.reasoning);
+        if (message.role === 'user' || content || message.views?.length || includeReasoning) {
+          messages.push(await modelMessage({ ...message, content }, includeReasoning, resolveAttachment));
+        }
+      }
       const maxToolRounds = 64;
       for (let round = 0; round <= maxToolRounds; round++) {
         const roundTools = round < maxToolRounds ? new Map(tools) : new Map();
@@ -466,11 +507,12 @@ async function generate(res, input, receive = async () => {}) {
         signal.throwIfAborted();
         if (!calls.length) {
           if (!reply.content && !reply.views?.length) fail(502, 'The model returned no answer.');
+          reply.finalContent = answer;
           delete reply.issue;
           break;
         }
         if (round === maxToolRounds) fail(502, 'The model exceeded the tool call limit.');
-        messages.push({ role: 'assistant', content: answer || null, tool_calls: calls });
+        const toolMessages = [{ role: 'assistant', content: answer || null, tool_calls: calls }];
         const mediaParts = [];
         for (const call of calls) {
           signal.throwIfAborted();
@@ -484,11 +526,6 @@ async function generate(res, input, receive = async () => {}) {
               if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid arguments');
               emit('tool', { text: entry.label });
               result = await entry.run(args, signal, workspace);
-              const part = result?.[toolMedia];
-              if (part) {
-                const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
-                mediaParts.push({ type: 'text', text: label }, part);
-              }
             } catch (error) {
               signal.throwIfAborted();
               const message = error instanceof WorkspaceMediaError ? error.message :
@@ -502,8 +539,16 @@ async function generate(res, input, receive = async () => {}) {
               tool: call.function.name, arguments: call.function.arguments,
               error: failure ?? result.error ?? 'Tool returned an error.' }));
           }
-          messages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
+          const part = result?.[toolMedia];
+          if (part) {
+            const label = part.type === 'image_url' ? 'Image from ' + result.path : 'Media from tool call ' + call.id + '.';
+            mediaParts.push({ type: 'text', text: label }, part);
+          }
+          toolMessages.push({ role: 'tool', tool_call_id: call.id, content: typeof result === 'string' ? result : JSON.stringify(result) });
         }
+        (reply.toolMessages ??= []).push(...toolMessages);
+        await save(chatPath(chatId), history);
+        messages.push(...toolMessages);
         // Chat Completions accepts image and audio parts in user messages, after all tool replies.
         if (mediaParts.length) messages.push({ role: 'user', content: mediaParts });
       }
@@ -535,10 +580,8 @@ createServer(async (req, res) => {
     if (origin && (!/^https?:\/\//.test(origin) || new URL(origin).host !== req.headers.host)) {
       fail(403, 'Cross-origin requests are disabled.');
     }
-    if (method === 'GET' && staticFiles.has(pathname)) {
-      const [type, body] = staticFiles.get(pathname);
-      res.writeHead(200, { 'Content-Type': type + '; charset=utf-8' });
-      return res.end(body);
+    if ((method === 'GET' || method === 'HEAD') && staticFiles.has(pathname)) {
+      return sendStatic(req, res, staticFiles.get(pathname));
     }
     if (pathname === '/api/settings' && method === 'GET') return send(res, 200, publicSettings(await settings()));
     if (pathname === '/api/settings' && method === 'PUT') {
@@ -672,6 +715,8 @@ createServer(async (req, res) => {
         chat.tools = chatTools(chat.tools || {}, await settings());
         const resolveAttachment = attachmentResolver(id);
         await Promise.all(chat.messages.map(async message => {
+          delete message.finalContent;
+          delete message.toolMessages;
           if (message.attachments) message.attachments = await presentAttachments(id, message.attachments, resolveAttachment);
           if (message.views) message.views = message.views.map(view => ({ ...view, url: viewURL(id, view.id) }));
         }));
