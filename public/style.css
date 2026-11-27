@@ -110,7 +110,6 @@ body:has(.sidebar-toggle[aria-expanded="false"]) {
 .history-actions { color: var(--dim); }
 .history-actions svg { width: 17px; height: 17px; }
 :is(.sidebar, .sidebar-controls, .sidebar-footer) button:focus-visible, main :is(button, select):focus-visible { outline-color: var(--muted); outline-offset: -2px; }
-body:not(.keyboard-navigation) :is(.sidebar, .sidebar-controls, .sidebar-footer, main) :focus-visible { outline: none; }
 .history-menu {
   min-width: 132px; padding: 4px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--text); box-shadow: 0 6px 18px var(--menu-shadow);
@@ -218,7 +217,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: r
 .chat-stats { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px 14px; margin: 7px 0 0; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
 .composer { border: 1px solid var(--control-line); border-radius: 13px; background: var(--panel); padding: 11px 12px 9px; }
 .composer textarea { width: 100%; max-height: min(25vh, 180px); padding: 4px; display: block; field-sizing: content; min-height: 36px; resize: none; background: transparent; border: 0; border-radius: 4px; }
-.keyboard-navigation .composer textarea:focus-visible { outline: none; border-block-end: 2px solid var(--muted); padding-block-end: 2px; }
+.composer textarea:focus-visible { outline: none; border-block-end: 2px solid var(--muted); padding-block-end: 2px; }
 .composer textarea::placeholder { color: var(--muted); }
 .composer-actions { display: flex; gap: 4px; align-items: center; margin-top: 6px; }
 .composer-submit { display: flex; align-items: center; gap: 6px; min-width: 0; margin-inline-start: auto; }

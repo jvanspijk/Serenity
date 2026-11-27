@@ -15,7 +15,6 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
   const hasDraft = () => Boolean($('prompt').value.trim() || state.attachments.length);
   const selectionModifier = event => event.metaKey || event.ctrlKey;
   const titleSegmenter = new Intl.Segmenter();
-  const navigationKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Enter', ' ']);
   const selectedChats = new Set();
   let selectionAnchor;
   let clickedChat;
@@ -844,13 +843,6 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
   document.addEventListener('click', event => {
     if (!$('chat-tools').contains(event.target)) setToolsOpen(false);
   });
-  document.addEventListener('pointerdown', () => document.body.classList.remove('keyboard-navigation'), true);
-  document.addEventListener('keydown', event => {
-    const editing = event.target.closest?.('input, textarea, [contenteditable]');
-    if (event.key === 'Tab' || event.key === 'Escape' || (!editing && navigationKeys.has(event.key))) {
-      document.body.classList.add('keyboard-navigation');
-    }
-  }, true);
 
   const mobile = matchMedia('(max-width: 690px)');
   const sidebarToggle = $('sidebar-toggle');
