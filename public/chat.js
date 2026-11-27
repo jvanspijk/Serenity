@@ -256,11 +256,6 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
         if (event.newState !== 'open') return;
         const count = chatsForDeletion(chat.id).length;
         removeLabel.textContent = count > 1 ? 'Delete ' + count + ' conversations' : 'Delete';
-        const { top, right, bottom } = actions.getBoundingClientRect();
-        const above = document.documentElement.clientHeight - bottom < 64;
-        menu.classList.toggle('above', above);
-        menu.style.setProperty('--menu-top', (above ? top - 4 : bottom + 4) + 'px');
-        menu.style.setProperty('--menu-right', (document.documentElement.clientWidth - right) + 'px');
       });
 
       const remove = element('button', 'history-delete');
@@ -888,11 +883,6 @@ export function initializeChat({ $, api, request, element, icon, iconButton, tog
   $('scrim').addEventListener('click', closeSidebar);
   mobile.addEventListener('change', hideMobileSidebar);
   hideMobileSidebar();
-  function closeHistoryMenu() {
-    $('history').querySelector('.history-menu:popover-open')?.hidePopover();
-  }
-  $('history').addEventListener('scroll', closeHistoryMenu, { passive: true });
-  window.addEventListener('resize', closeHistoryMenu);
   const deleteSelected = $('delete-selected');
   function selectedConversations() {
     return state.list.filter(chat => selectedChats.has(chat.id));

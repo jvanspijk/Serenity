@@ -112,11 +112,16 @@ body:has(.sidebar-toggle[aria-expanded="false"]) {
 :is(.sidebar, .sidebar-controls, .sidebar-footer) button:focus-visible, main :is(button, select):focus-visible { outline-color: var(--muted); outline-offset: -2px; }
 body:not(.keyboard-navigation) :is(.sidebar, .sidebar-controls, .sidebar-footer, main) :focus-visible { outline: none; }
 .history-menu {
-  position: fixed; inset: auto; top: var(--menu-top); right: var(--menu-right); margin: 0;
   min-width: 132px; padding: 4px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--text); box-shadow: 0 6px 18px var(--menu-shadow);
 }
-.history-menu.above { transform: translateY(-100%); }
+@supports (position-area: block-end span-inline-start) {
+  .history-menu {
+    inset: auto; margin: 4px 0;
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: flip-block;
+  }
+}
 .history-delete { display: flex; width: 100%; min-height: 38px; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 5px; color: var(--warn); font-size: .875rem; }
 .history-delete:hover { background: var(--hover); }
 .history-delete svg { width: 16px; height: 16px; }
