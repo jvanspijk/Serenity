@@ -77,8 +77,10 @@ const paletteOptions = paletteNames.filter(name => colorPalettes.has(name)).map(
 });
 const settingsDialog = (await readFile(new URL('./public/settings.html', import.meta.url), 'utf8')).trimEnd()
   .replace('<!-- Palette options -->', paletteOptions.join('\n              '));
+const chatMarkup = (await readFile(new URL('./public/chat.html', import.meta.url), 'utf8')).trimEnd();
 const index = (await readFile(new URL('./public/index.html', import.meta.url), 'utf8'))
   .replace('<!-- Palette stylesheets -->', paletteLinks.join('\n  '))
+  .replace('  <!-- Chat -->', () => chatMarkup)
   .replace('  <!-- Settings dialog -->', () => settingsDialog);
 const publicFile = path => readFile(new URL('./public' + path, import.meta.url));
 const staticFiles = new Map(await Promise.all([
@@ -89,6 +91,7 @@ const staticFiles = new Map(await Promise.all([
     return [path, 'text/css', publicFile(path)];
   }),
   ['/app.js', 'text/javascript', publicFile('/app.js')],
+  ['/chat.js', 'text/javascript', publicFile('/chat.js')],
   ['/settings.js', 'text/javascript', publicFile('/settings.js')],
   ['/markdown.js', 'text/javascript', publicFile('/markdown.js')],
   ['/icons.svg', 'image/svg+xml', publicFile('/icons.svg')],
